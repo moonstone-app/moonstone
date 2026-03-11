@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Moonstone</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Instrument+Serif&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/moonstone.css">
+<link rel="stylesheet" href="/static/dashboard.css">
+<script>
+(function(){
+  var saved = localStorage.getItem('zb-theme');
+  if (saved) document.documentElement.setAttribute('data-theme', saved);
+})();
+</script>
+</head>
+<body>
+
+<!-- Ambient floating glows -->
+<div class="db-ambient">
+  <div class="db-glow db-glow--1"></div>
+  <div class="db-glow db-glow--2"></div>
+  <div class="db-glow db-glow--3"></div>
+</div>
+
+<!-- Header -->
+<div class="db-header">
+ <div class="db-header-row">
+  <div class="db-brand">
+   <div class="ms-moon"></div>
+   <div class="db-brand-text">
+    <h1>Moonstone</h1>
+    <p>Web applets for your notebook</p>
+   </div>
+  </div>
+  <div class="db-header-actions">
+   <button class="db-theme-btn" onclick="toggleTheme()" title="Toggle dark/light theme">
+    <span id="themeIcon">&#x2600;</span>
+   </button>
+   <button class="db-hdr-btn" onclick="window.open('/workspace','_blank')" title="Open Workspace">
+    <span class="ico">&#x1F5C2;</span> Workspace
+   </button>
+   <button class="db-hdr-btn db-hdr-btn-primary" id="btnAdd" title="Install applet from Git">
+    <span class="ico">+</span> Install
+   </button>
+   <button class="db-hdr-btn" id="btnUpdates" title="Check all applets for updates">
+    <span class="ico">&#x21bb;</span>
+   </button>
+  </div>
+ </div>
+ <div class="db-search-row">
+  <input type="text" id="dashSearch" class="db-search-input" placeholder="Search applets and services..." autocomplete="off">
+ </div>
+</div>
+
+<!-- Main -->
+<div class="db-main">
+ <div id="notebook-info"></div>
+ <div id="applets" class="db-grid"></div>
+ <div id="services-section" style="margin-top:32px;display:none">
+  <h2 class="db-section-title">&#x26A1; Services</h2>
+  <div id="services" class="db-grid"></div>
+ </div>
+</div>
+
+<!-- Status bar -->
+<div class="db-status-bar">
+ <div class="db-status-inner">
+  <span class="dot"></span> Server running &nbsp;|&nbsp;
+  <a href="/api/docs" target="_blank">Swagger UI</a> &middot;
+  <a href="/api/openapi.json" target="_blank">OpenAPI</a> &middot;
+  <a href="/api/dev-bundle" target="_blank">Dev Bundle</a> &middot;
+  <a href="/api/" target="_blank">API</a> &middot;
+  <a href="/events" target="_blank">SSE</a> &middot;
+  <span id="ws-status">WS: checking...</span>
+ </div>
+</div>
+
+<!-- Service Config Modal -->
+<div class="db-overlay" id="svcConfigModal">
+ <div class="db-modal">
+  <h2 id="svcCfgTitle">Configure Service</h2>
+  <p class="db-modal-sub" id="svcCfgDesc"></p>
+  <div id="svcCfgMsg"></div>
+  <div id="svcCfgFields"></div>
+  <div class="db-modal-btns">
+   <button id="svcCfgCancel">Cancel</button>
+   <button class="btn-primary" id="svcCfgSave">Save</button>
+  </div>
+ </div>
+</div>
+
+<!-- Install Modal -->
+<div class="db-overlay" id="installModal">
+ <div class="db-modal">
+  <h2>Install from Git</h2>
+  <p class="db-modal-sub">Paste a repository URL to install an applet</p>
+  <div id="installMsg"></div>
+  <label>Repository URL</label>
+  <input type="text" id="gitUrl" placeholder="https://github.com/user/moonstone-applet" autofocus>
+  <div class="db-modal-btns">
+   <button id="btnCancel">Cancel</button>
+   <button class="btn-primary" id="btnInstall">Install</button>
+  </div>
+ </div>
+</div>
+
+<script>
+/* ============================================================
+   Moonstone Dashboard — Client-side logic
+   ============================================================ */
+
+var $=document.getElementById.bind(document);
+var grid=$("applets");
+var applets = [];
+
+/* --- Theme toggle --- */
+function toggleTheme() {
+  var html = document.documentElement;
+  var current = html.getAttribute('data-theme') || 'dark';
+  var next = current === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  localStorage.setItem('zb-theme', next);
+  updateThemeIcon(next);
+}
+function updateThemeIcon(theme) {
+  var icon = $('themeIcon');
+  if (icon) icon.innerHTML = theme === 'dark' ? '\u2600' : '\uD83C\uDF19';
+}
+updateThemeIcon(document.documentElement.getAttribute('data-theme') || 'dark');
+
+/* --- Notebook info --- */
+fetch("/api/notebook").then(function(r){return r.json()}).then(function(d){
+ $("notebook-info").textContent="\uD83D\uDCD3 "+d.name+(d.readonly?" (read-only)":"");
+}).catch(function(){});
+
+/* --- WS status --- */
+fetch('/api/capabilities').then(function(r){return r.json()}).then(function(d){
+  var el=$('ws-status');
+  if(d.websocket&&d.websocket.enabled){
+    el.innerHTML='<a href="javascript:void(0)" title="'+d.websocket.url+'">WS: \u2705 '+d.websocket.url+'</a>';
+  } else {
+    el.textContent='WS: \u274C disabled';
+  }
+}).catch(function(){$('ws-status').textContent='WS: \u274C';});
+
+/* --- Helpers --- */
+function esc(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML}
+
+/* --- Render applets --- */
+function render(list){
+ grid.innerHTML="";
+ if(!list.length){
+  grid.innerHTML='<div class="db-empty"><div class="db-empty-icon">&#x1F4E6;</div>'+
+   "<p>No applets installed yet</p>"+
+   '<button class="db-btn" onclick="installFeatured(\'https://github.com/moonstone-pkm/web-editor.git\', \'applet\')" style="margin-top:12px;padding:8px 16px;font-size:1rem;background:var(--ms-accent);color:#000;border-radius:var(--ms-radius);cursor:pointer;border:none;">&#xFF0B; Install Web Editor</button>'+
+   '</div>';
+  return;
+ }
+ list.forEach(function(a){
+  var c=document.createElement("div");
+  c.className="db-card";c.id="card-"+a.name;
+  var tag=a.source==="git"?'<span class="db-tag db-tag-git">git</span>':'<span class="db-tag db-tag-local">local</span>';
+  var meta=["v"+(a.version||"?")];
+  if(a.author)meta.push(esc(a.author));
+  var acts="";
+  if(a.source==="git")acts+='<button class="db-act-btn act-update" data-do="update" data-name="'+esc(a.name)+'" title="Update">&#x21bb;</button>';
+  acts+='<button class="db-act-btn act-danger" data-do="rm" data-name="'+esc(a.name)+'" data-label="'+esc(a.label)+'" title="Remove">&#x2715;</button>';
+  c.innerHTML='<div class="db-drag-handle" title="Drag to reorder"></div>'+
+   '<a class="db-card-link" href="/apps/'+a.name+'/" target="_blank">'+
+   '<div class="db-card-top"><div class="db-card-icon">'+(a.icon||"&#x1F4E6;")+"</div>"+
+   '<div class="db-card-title">'+esc(a.label)+"</div></div>"+
+   (a.description?'<div class="db-card-desc">'+esc(a.description)+"</div>":"")+
+   "</a>"+
+   '<div class="db-card-footer"><div class="db-card-meta">'+tag+" &middot; "+meta.join(" &middot; ")+"</div>"+
+   '<div class="db-card-actions">'+acts+"</div></div>";
+  grid.appendChild(c);
+ });
+}
+
+/* --- Saved order from KV Store --- */
+var _appletOrder = null;
+var _serviceOrder = null;
+
+function sortByOrder(list, order) {
+ if (!order || !order.length) return list;
+ var map = {};
+ order.forEach(function(name, i) { map[name] = i; });
+ var sorted = list.slice();
+ sorted.sort(function(a, b) {
+  var ai = map[a.name] != null ? map[a.name] : 9999;
+  var bi = map[b.name] != null ? map[b.name] : 9999;
+  return ai - bi;
+ });
+ return sorted;
+}
+
+function saveAppletOrder() {
+ var cards = grid.querySelectorAll('.db-card');
+ var order = [];
+ cards.forEach(function(c) { order.push(c.id.replace('card-', '')); });
+ _appletOrder = order;
+ fetch("/api/store/_dashboard/applet_order", {
+  method: "PUT", headers: {"Content-Type": "application/json"},
+  body: JSON.stringify({value: order})
+ }).catch(function(){});
+}
+
+function saveServiceOrder() {
+ var sg = $("services");
+ var cards = sg.querySelectorAll('.db-card');
+ var order = [];
+ cards.forEach(function(c) { order.push(c.id.replace('svc-', '')); });
+ _serviceOrder = order;
+ fetch("/api/store/_dashboard/service_order", {
+  method: "PUT", headers: {"Content-Type": "application/json"},
+  body: JSON.stringify({value: order})
+ }).catch(function(){});
+}
+
+/* --- Drag and drop --- */
+var _dragEl = null;
+var _dragGrid = null;
+var _pointerTarget = null;
+
+/* Track the actual element under the cursor at mousedown,
+   because dragstart's e.target is always the draggable element itself */
+document.addEventListener('pointerdown', function(e) { _pointerTarget = e.target; });
+document.addEventListener('pointerup',   function()  { _pointerTarget = null; });
+
+function initDraggable(container, onDrop) {
+ container.addEventListener('dragstart', function(e) {
+  var card = e.target.closest('.db-card');
+  if (!card) return;
+  // Only allow drag from the handle — check the real pointer target
+  if (!_pointerTarget || !_pointerTarget.closest('.db-drag-handle')) { e.preventDefault(); return; }
+  _dragEl = card;
+  _dragGrid = container;
+  card.classList.add('db-dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', card.id);
+ });
+ container.addEventListener('dragend', function(e) {
+  if (_dragEl) _dragEl.classList.remove('db-dragging');
+  container.querySelectorAll('.db-drag-over').forEach(function(el) {
+   el.classList.remove('db-drag-over');
+  });
+  _dragEl = null;
+  _dragGrid = null;
+ });
+ container.addEventListener('dragover', function(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  var card = e.target.closest('.db-card');
+  if (card && card !== _dragEl && container === _dragGrid) {
+   container.querySelectorAll('.db-drag-over').forEach(function(el) {
+    el.classList.remove('db-drag-over');
+   });
+   card.classList.add('db-drag-over');
+  }
+ });
+ container.addEventListener('dragleave', function(e) {
+  var card = e.target.closest('.db-card');
+  if (card) card.classList.remove('db-drag-over');
+ });
+ container.addEventListener('drop', function(e) {
+  e.preventDefault();
+  var target = e.target.closest('.db-card');
+  if (!target || !_dragEl || target === _dragEl || container !== _dragGrid) return;
+  target.classList.remove('db-drag-over');
+  // Determine position
+  var cards = Array.from(container.querySelectorAll('.db-card'));
+  var dragIdx = cards.indexOf(_dragEl);
+  var targetIdx = cards.indexOf(target);
+  if (dragIdx < targetIdx) {
+   target.parentNode.insertBefore(_dragEl, target.nextSibling);
+  } else {
+   target.parentNode.insertBefore(_dragEl, target);
+  }
+  if (onDrop) onDrop();
+ });
+}
+
+initDraggable(grid, saveAppletOrder);
+initDraggable($("services"), saveServiceOrder);
+
+/* --- Load applets from API --- */
+function loadApplets(){
+ Promise.all([
+  fetch("/api/applets").then(function(r){return r.json()}),
+  _appletOrder ? Promise.resolve(_appletOrder) :
+   fetch("/api/store/_dashboard/applet_order").then(function(r){return r.json()}).then(function(d){return d.value||[]}).catch(function(){return []})
+ ]).then(function(results){
+  applets = results[0].applets || [];
+  _appletOrder = results[1];
+  var sorted = sortByOrder(applets, _appletOrder);
+  render(sorted);
+  // Make all cards draggable
+  grid.querySelectorAll('.db-card').forEach(function(c){ c.draggable = true; });
+ }).catch(function(e){
+  grid.innerHTML='<div class="db-empty"><div class="db-empty-icon">\u26A0</div>'+
+   '<p>Failed to load applets</p><p>'+esc(e.message)+'</p></div>';
+ });
+}
+loadApplets();
+
+/* --- Event delegation (card actions) --- */
+grid.addEventListener("click",function(e){
+ var b=e.target.closest("[data-do]");if(!b)return;
+ e.preventDefault();e.stopPropagation();
+ var act=b.getAttribute("data-do"),nm=b.getAttribute("data-name"),lb=b.getAttribute("data-label");
+ if(act==="update")doUpdate(nm);
+ else if(act==="rm")doRemove(nm,lb||nm);
+});
+
+function doUpdate(name){
+ var card=$("card-"+name);if(!card)return;
+ var box=card.querySelector(".db-card-actions");
+ var orig=box.innerHTML;
+ box.innerHTML='<span class="db-spin"></span>';
+ fetch("/api/applets/"+name+"/update",{method:"POST"}).then(function(r){return r.json()}).then(function(d){
+  if(d.error){box.innerHTML=orig;alert("Update failed: "+d.error);}
+  else if(d.updated){box.innerHTML="&#x2714;";setTimeout(loadApplets,1200);}
+  else{box.innerHTML=orig;alert(d.message||"Already up to date");}
+ }).catch(function(e){box.innerHTML=orig;alert(e.message);});
+}
+
+function doRemove(name,label){
+ if(!confirm("Remove \u201c"+label+"\u201d and all its files?"))return;
+ fetch("/api/applets/"+name,{method:"DELETE"}).then(function(r){return r.json()}).then(function(d){
+  if(d.error)alert(d.error);else loadApplets();
+ }).catch(function(e){alert(e.message);});
+}
+
+/* --- Featured Installation --- */
+window.installFeatured=function(url, type){
+ var btn = event.target;
+ var orig = btn.innerHTML;
+ btn.innerHTML = '<span class="db-spin" style="margin-right:8px;display:inline-block;width:14px;height:14px;border:2px solid rgba(0,0,0,0.3);border-top-color:#000;border-radius:50%;animation:db-spin 1s linear infinite"></span>Installing...';
+ btn.disabled = true;
+ btn.style.opacity = "0.8";
+
+ var endpoint = type === 'applet' ? '/api/applets/install' : '/api/services/install';
+ fetch(endpoint, {
+  method: 'POST',
+  headers: {'Content-Type':'application/json'},
+  body: JSON.stringify({url: url})
+ }).then(function(r){return r.json()}).then(function(d){
+  if(d.error) {
+   alert("Install failed: " + d.error);
+   btn.innerHTML = orig;
+   btn.disabled = false;
+   btn.style.opacity = "1";
+  } else {
+   if(type === 'applet') loadApplets();
+   else loadServices();
+  }
+ }).catch(function(e){
+  alert(e.message);
+  btn.innerHTML = orig;
+  btn.disabled = false;
+  btn.style.opacity = "1";
+ });
+};
+
+/* --- Install modal --- */
+$("btnAdd").addEventListener("click",openModal);
+$("btnCancel").addEventListener("click",closeModal);
+$("installModal").addEventListener("click",function(e){if(e.target===this)closeModal();});
+$("gitUrl").addEventListener("keydown",function(e){
+ if(e.key==="Enter")installNow();if(e.key==="Escape")closeModal();
+});
+
+function openModal(){
+ $("installModal").classList.add("active");
+ $("gitUrl").value="";
+ $("installMsg").innerHTML="";$("btnInstall").disabled=false;
+ setTimeout(function(){$("gitUrl").focus();},100);
+}
+function closeModal(){$("installModal").classList.remove("active");}
+
+$("btnInstall").addEventListener("click",installNow);
+function installNow(){
+ var url=$("gitUrl").value.trim();
+ var msg=$("installMsg"),btn=$("btnInstall");
+ if(!url){msg.innerHTML='<div class="db-msg db-msg-error">Enter a repository URL</div>';return;}
+ btn.disabled=true;
+ msg.innerHTML='<div class="db-msg db-msg-loading"><span class="db-spin"></span>Cloning &amp; installing\u2026</div>';
+ fetch("/api/applets/install",{method:"POST",headers:{"Content-Type":"application/json"},
+  body:JSON.stringify({url:url})
+ }).then(function(r){return r.json()}).then(function(d){
+  if(d.error){msg.innerHTML='<div class="db-msg db-msg-error">'+esc(d.error)+"</div>";btn.disabled=false;}
+  else{
+   var t='<div class="db-msg db-msg-success">Installed <b>'+esc(d.label)+"</b> v"+esc(d.version)+"</div>";
+   if(d.warnings&&d.warnings.length)t+='<div class="db-msg db-msg-warn">'+d.warnings.map(esc).join("<br>")+"</div>";
+   msg.innerHTML=t;setTimeout(function(){closeModal();loadApplets();},1400);
+  }
+ }).catch(function(e){msg.innerHTML='<div class="db-msg db-msg-error">'+esc(e.message)+"</div>";btn.disabled=false;});
+}
+
+/* --- Services --- */
+function loadServices(){
+ fetch("/api/services").then(function(r){return r.json()}).then(function(d){
+  var list=d.services||[];
+  var sec=$("services-section"),sg=$("services");
+  sec.style.display="block";sg.innerHTML="";
+  if(!list.length){
+   sg.innerHTML='<div class="db-empty"><div class="db-empty-icon">&#x26A1;</div>'+
+    "<p>No services installed yet</p>"+
+    '<button class="db-btn" onclick="installFeatured(\'https://github.com/moonstone-pkm/telegram-notes.git\', \'service\')" style="margin-top:12px;padding:8px 16px;font-size:1rem;background:var(--ms-accent);color:#000;border-radius:var(--ms-radius);cursor:pointer;border:none;">&#xFF0B; Install Telegram Bridge</button>'+
+    '</div>';
+   return;
+  }
+  list.forEach(function(s){
+   var c=document.createElement("div");c.className="db-card";c.id="svc-"+s.name;
+   var si={"running":"\uD83D\uDFE2","stopped":"\u26AB","error":"\uD83D\uDD34","starting":"\uD83D\uDFE1","stopping":"\uD83D\uDFE1"};
+   var icon=si[s.status]||"\u26AB";
+   var meta=["v"+(s.version||"?")];
+   if(s.author)meta.push(esc(s.author));
+   if(s.status==="running"&&s.uptime)meta.push("up "+fmtUp(s.uptime));
+   if(s.pid)meta.push("pid "+s.pid);
+   var tag=s.source==="git"?'<span class="db-tag db-tag-git">git</span>':'<span class="db-tag db-tag-local">local</span>';
+   var btnHtml='';
+   if(s.has_config)
+    btnHtml+='<button class="db-act-btn" data-svc-cfg="'+esc(s.name)+'" title="Configure">\u2699\uFE0F</button>';
+   if(s.status==="running"||s.status==="starting")
+    btnHtml+='<button class="db-act-btn act-danger" data-svc="stop" data-name="'+esc(s.name)+'" title="Stop">\u23F9</button>';
+   else
+    btnHtml+='<button class="db-act-btn act-update" data-svc="start" data-name="'+esc(s.name)+'" title="Start">\u25B6</button>';
+   c.innerHTML='<div class="db-drag-handle" title="Drag to reorder"></div>'+
+    '<div class="db-card-link" style="cursor:default;padding-top:24px;padding-right:24px;padding-bottom:16px">'+
+    '<div class="db-card-top"><div class="db-card-icon">'+(s.icon||"\u26A1")+"</div>"+
+    '<div class="db-card-title">'+icon+" "+esc(s.label||s.name)+"</div></div>"+
+    (s.description?'<div class="db-card-desc">'+esc(s.description)+"</div>":"")+
+    (s.error?'<div class="db-card-desc" style="color:var(--ms-danger);margin-top:6px">'+esc(s.error)+"</div>":"")+
+    "</div>"+
+    '<div class="db-card-footer"><div class="db-card-meta">'+tag+" &middot; "+meta.join(" &middot; ")+"</div>"+
+    '<div class="db-card-actions" style="opacity:1">'+btnHtml+"</div></div>";
+   c.draggable = true;
+   sg.appendChild(c);
+  });
+ }).catch(function(){});
+}
+function fmtUp(s){if(s<60)return s+"s";if(s<3600)return Math.floor(s/60)+"m";return Math.floor(s/3600)+"h "+Math.floor((s%3600)/60)+"m";}
+loadServices();
+
+/* SSE for service status */
+try{
+  var _se=new EventSource("/events");
+  _se.addEventListener("service:starting",function(){loadServices()});
+  _se.addEventListener("service:started",function(){loadServices()});
+  _se.addEventListener("service:stopped",function(){loadServices()});
+  _se.addEventListener("service:crashed",function(){loadServices()});
+}catch(e){}
+
+$("services").addEventListener("click",function(e){
+ var cb=e.target.closest("[data-svc-cfg]");
+ if(cb){openSvcConfig(cb.getAttribute("data-svc-cfg"));return;}
+ var b=e.target.closest("[data-svc]");if(!b)return;
+ var act=b.getAttribute("data-svc"),nm=b.getAttribute("data-name");
+ b.innerHTML='<span class="db-spin"></span>';
+ fetch("/api/services/"+nm+"/"+act,{method:"POST"}).then(function(r){return r.json()}).then(function(){
+  loadServices();setTimeout(loadServices,2000);
+ }).catch(function(){setTimeout(loadServices,500);});
+});
+
+/* --- Service Config Modal --- */
+var _cfgName="";
+function openSvcConfig(name){
+ _cfgName=name;
+ var m=$("svcConfigModal"),msg=$("svcCfgMsg"),fields=$("svcCfgFields");
+ msg.innerHTML='<div class="db-msg db-msg-loading"><span class="db-spin"></span>Loading...</div>';
+ fields.innerHTML="";m.classList.add("active");
+ fetch("/api/services/"+encodeURIComponent(name)+"/config").then(function(r){return r.json()}).then(function(d){
+  if(d.error){msg.innerHTML='<div class="db-msg db-msg-error">'+esc(d.error)+"</div>";return;}
+  msg.innerHTML="";
+  $("svcCfgTitle").textContent="Configure: "+(d.name||name);
+  var schema=d.preferences||d.schema||[];
+  var config=d.config||{};
+  var html="";
+  schema.forEach(function(p){
+   var k=p.key,v=config[k]!=null?config[k]:p["default"];
+   var req=p.required?' <span style="color:var(--ms-danger)">*</span>':"";
+   if(p.type==="boolean"){
+    html+='<label style="display:flex;align-items:center;gap:8px;margin-bottom:12px;cursor:pointer;text-transform:none;letter-spacing:0;font-weight:500">'+
+     '<input type="checkbox" data-cfg="'+esc(k)+'" data-type="boolean"'+(v?" checked":"")+
+     ' style="width:auto;margin:0;accent-color:var(--ms-silver)"> '+esc(p.label||k)+req+"</label>";
+   }else{
+    var secret=/token|password|secret|api.key/i.test(k);
+    html+="<label>"+esc(p.label||k)+req+"</label>";
+    html+='<input type="'+(secret?"password":"text")+'" data-cfg="'+esc(k)+'" data-type="string"'+
+     ' value="'+esc(v||"")+'" placeholder="'+(p.description?esc(p.description):"")+'">';
+   }
+   if(p.description&&p.type!=="boolean")html+='<div style="font-size:.72rem;color:var(--ms-text-muted);margin:-16px 0 16px">'+esc(p.description)+"</div>";
+  });
+  fields.innerHTML=html;
+ }).catch(function(e){msg.innerHTML='<div class="db-msg db-msg-error">'+esc(e.message)+"</div>";});
+}
+$("svcCfgCancel").addEventListener("click",function(){$("svcConfigModal").classList.remove("active");});
+$("svcConfigModal").addEventListener("click",function(e){if(e.target===this)this.classList.remove("active");});
+$("svcCfgSave").addEventListener("click",function(){
+ var inputs=document.querySelectorAll("#svcCfgFields [data-cfg]"),cfg={};
+ inputs.forEach(function(el){
+  var k=el.getAttribute("data-cfg"),t=el.getAttribute("data-type");
+  cfg[k]=t==="boolean"?el.checked:el.value.trim();
+ });
+ var msg=$("svcCfgMsg");
+ msg.innerHTML='<div class="db-msg db-msg-loading"><span class="db-spin"></span>Saving...</div>';
+ fetch("/api/services/"+encodeURIComponent(_cfgName)+"/config",{method:"PUT",
+  headers:{"Content-Type":"application/json"},body:JSON.stringify(cfg)
+ }).then(function(r){return r.json()}).then(function(d){
+  if(d.error){msg.innerHTML='<div class="db-msg db-msg-error">'+esc(d.error)+"</div>";return;}
+  msg.innerHTML='<div class="db-msg db-msg-success">\u2705 Saved. Restart service to apply.</div>';
+  setTimeout(function(){$("svcConfigModal").classList.remove("active");},1500);
+ }).catch(function(e){msg.innerHTML='<div class="db-msg db-msg-error">'+esc(e.message)+"</div>";});
+});
+
+/* --- Check updates --- */
+$("btnUpdates").addEventListener("click",function(){
+ var btn=this;btn.disabled=true;btn.style.opacity=".5";
+ fetch("/api/applets/updates").then(function(r){return r.json()}).then(function(d){
+  btn.disabled=false;btn.style.opacity="";
+  if(!d.applets||!d.applets.length){alert("No git-installed applets to check.");return;}
+  var msgs=[],any=false;
+  d.applets.forEach(function(a){
+   if(a.has_update){any=true;msgs.push(a.name+": update available");
+    var card=$("card-"+a.name);
+    if(card){var h=card.querySelector(".db-card-meta");
+     if(h&&!h.querySelector(".db-tag-update"))h.insertAdjacentHTML("beforeend",' <span class="db-tag db-tag-update">update</span>');}
+   }
+  });
+  if(!any)alert("All applets are up to date \u2714");
+  else alert("Updates available:\n"+msgs.join("\n"));
+ }).catch(function(e){btn.disabled=false;btn.style.opacity="";alert(e.message);});
+});
+
+/* --- Search filter --- */
+$("dashSearch").addEventListener("input", function() {
+ var q = this.value.trim().toLowerCase();
+ // Filter applets
+ grid.querySelectorAll('.db-card').forEach(function(c) {
+  var text = c.textContent.toLowerCase();
+  c.style.display = (!q || text.indexOf(q) !== -1) ? '' : 'none';
+ });
+ // Filter services
+ $("services").querySelectorAll('.db-card').forEach(function(c) {
+  var text = c.textContent.toLowerCase();
+  c.style.display = (!q || text.indexOf(q) !== -1) ? '' : 'none';
+ });
+ // Show services section if any match
+ var sec = $("services-section");
+ if (sec.style.display !== "none") {
+  var anyVisible = false;
+  $("services").querySelectorAll('.db-card').forEach(function(c) {
+   if (c.style.display !== 'none') anyVisible = true;
+  });
+  sec.style.display = anyVisible ? '' : 'none';
+ }
+});
+</script>
+</body>
+</html>

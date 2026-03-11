@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "moonstone"
+version = "0.1.0"
+description = "Standalone REST API server for personal knowledge management"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+dependencies = [
+    "watchdog",
+    "pystray",
+    "Pillow",
+]
+
+[project.scripts]
+moonstone = "moonstone.headless:main"
+
+[tool.setuptools]
+package-dir = {"moonstone" = "."}
+packages = [
+    "moonstone",
+    "moonstone.formats",
+    "moonstone.notebook",
+    "moonstone.notebook.index",
+    "moonstone.parse",
+    "moonstone.profiles",
+    "moonstone.webbridge",
+]
+
+[tool.setuptools.package-data]
+moonstone = [
+    "data/**/*",
+    "webbridge/static/**/*",
+]
