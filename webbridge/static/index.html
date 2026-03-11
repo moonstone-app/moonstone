@@ -155,7 +155,7 @@ function render(list){
  if(!list.length){
   grid.innerHTML='<div class="db-empty"><div class="db-empty-icon">&#x1F4E6;</div>'+
    "<p>No applets installed yet</p>"+
-   '<button class="db-btn" onclick="installFeatured(\'https://github.com/moonstone-pkm/web-editor.git\', \'applet\')" style="margin-top:12px;padding:8px 16px;font-size:1rem;background:var(--ms-accent);color:#000;border-radius:var(--ms-radius);cursor:pointer;border:none;">&#xFF0B; Install Web Editor</button>'+
+   '<button class="db-btn" onclick="installFeatured(\'https://github.com/moonstone-app/applet-web-editor\', \'applet\')" style="margin-top:12px;padding:8px 16px;font-size:1rem;background:var(--ms-accent);color:#000;border-radius:var(--ms-radius);cursor:pointer;border:none;">&#xFF0B; Install Web Editor</button>'+
    '</div>';
   return;
  }
@@ -409,7 +409,7 @@ function loadServices(){
   if(!list.length){
    sg.innerHTML='<div class="db-empty"><div class="db-empty-icon">&#x26A1;</div>'+
     "<p>No services installed yet</p>"+
-    '<button class="db-btn" onclick="installFeatured(\'https://github.com/moonstone-pkm/telegram-notes.git\', \'service\')" style="margin-top:12px;padding:8px 16px;font-size:1rem;background:var(--ms-accent);color:#000;border-radius:var(--ms-radius);cursor:pointer;border:none;">&#xFF0B; Install Telegram Bridge</button>'+
+    '<button class="db-btn" onclick="installFeatured(\'https://github.com/moonstone-app/service-telegram-notes\', \'service\')" style="margin-top:12px;padding:8px 16px;font-size:1rem;background:var(--ms-accent);color:#000;border-radius:var(--ms-radius);cursor:pointer;border:none;">&#xFF0B; Install Telegram Bridge</button>'+
     '</div>';
    return;
   }
