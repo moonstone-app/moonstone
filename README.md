@@ -34,7 +34,7 @@ Point Moonstone at an empty directory, and it will instantly bootstrap a fully f
 Already have notes? Point Moonstone at your **Obsidian**, **Logseq**, or **Zim** folder, and it will effortlessly digest them, translating their unique dialects into a unified API on the fly. 
 
 ```bash
-pipx install moonstone-app
+pipx install git+https://github.com/moonstone-app/moonstone
 moonstone ~/my-vault
 ```
 
@@ -80,13 +80,13 @@ The recommended way to install Moonstone globally is using `pipx` (so it doesn't
 #### Linux:
 
 ```bash
-pipx install moonstone-app --force --system-site-packages
+pipx install git+https://github.com/moonstone-app/moonstone --force --system-site-packages
 ```
 
 #### Win/MacOS:
 
 ```bash
-pipx install moonstone-app
+pipx install git+https://github.com/moonstone-app/moonstone
 ```
 
 After that you can add desktop file with `--install-shortcut` flag.
