@@ -797,6 +797,7 @@ class WebBridgeApp:
         headers = cors_headers + [
             ("Content-Type", "text/plain; charset=utf-8"),
             ("Content-Length", str(len(content_bytes))),
+            ("Content-Disposition", 'attachment; filename="moonstone-dev-bundle.txt"'),
         ]
         start_response("200 OK", headers)
         return [content_bytes]
