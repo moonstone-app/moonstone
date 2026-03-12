@@ -23,6 +23,10 @@ Usage in your service.py:
     # Tags
     api.add_tag('Home', 'automated')
 
+    # Attachments
+    with open('photo.jpg', 'rb') as f:
+        api.upload_attachment('Home', 'photo.jpg', f.read())
+
 Environment variables (set automatically by ServiceManager):
     MOONSTONE_API_URL       — e.g. http://localhost:8090/api
     MOONSTONE_AUTH_TOKEN     — auth token (if configured)
@@ -144,6 +148,39 @@ class MoonstoneAPI:
         return self.post(
             "page/%s/append" % safe, {"content": content, "format": format}
         )
+
+    def upload_attachment(self, page_path, filename, raw_bytes):
+        """Upload raw bytes as an attachment to a page."""
+        safe_path = page_path.replace(":", "/")
+        safe_file = urllib.parse.quote(filename)
+        path = "attachment/%s/%s" % (safe_path, safe_file)
+        
+        url = "%s/%s" % (self.base_url, path.lstrip("/"))
+        headers = {"Content-Type": "application/octet-stream"}
+        if self.auth_token:
+            headers["X-Auth-Token"] = self.auth_token
+
+        req = urllib.request.Request(url, data=raw_bytes, headers=headers, method="POST")
+        try:
+            resp = urllib.request.urlopen(req, timeout=self.timeout)
+            raw = resp.read().decode("utf-8")
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                return {"raw": raw}
+        except urllib.error.HTTPError as e:
+            raw = e.read().decode("utf-8", errors="replace")
+            try:
+                body = json.loads(raw)
+            except Exception:
+                body = {"raw": raw}
+            raise MoonstoneAPIError(
+                "API error %d: %s" % (e.code, body.get("error", raw[:200])),
+                status=e.code,
+                body=body,
+            )
+        except urllib.error.URLError as e:
+            raise MoonstoneAPIError("Connection failed: %s" % str(e.reason))
 
     def delete_page(self, page_path):
         """Delete a page."""
