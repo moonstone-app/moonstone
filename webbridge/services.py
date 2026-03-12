@@ -534,6 +534,7 @@ class ServiceManager:
                 "MOONSTONE_API_URL": self.api_url,
                 "MOONSTONE_SERVICE_NAME": svc.name,
                 "MOONSTONE_SERVICE_DATA_DIR": os.path.join(svc.path, "_data"),
+                "MOONSTONE_SDK_PATH": os.path.dirname(__file__),
                 "PYTHONUNBUFFERED": "1",
             }
         )
