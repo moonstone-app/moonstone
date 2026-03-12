@@ -3432,6 +3432,49 @@ def _paths_services():
                 },
             },
         },
+        "/api/services/updates": {
+            "get": {
+                "tags": ["Services"],
+                "summary": "Check all services for updates",
+                "operationId": "checkServiceUpdates",
+                "description": (
+                    "Checks all git-installed services for available updates by comparing "
+                    "local HEAD with the remote. Returns a list of services with their update status."
+                ),
+                "responses": {
+                    "200": {
+                        "description": "Update check results",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "services": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "name": {"type": "string"},
+                                                    "has_update": {"type": "boolean"},
+                                                    "local_commit": {"type": "string"},
+                                                    "remote_commit": {"type": "string"},
+                                                },
+                                            },
+                                        },
+                                        "count": {"type": "integer"},
+                                        "has_updates": {
+                                            "type": "boolean",
+                                            "description": "True if any service has an available update",
+                                        },
+                                    },
+                                }
+                            }
+                        },
+                    },
+                    "503": {"description": "Service manager not available", **_err},
+                },
+            },
+        },
         "/api/services/{service_name}/logs": {
             "get": {
                 "tags": ["Services"],

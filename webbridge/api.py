@@ -22,19 +22,27 @@ logger = logging.getLogger("moonstone.webbridge")
 
 
 class _WebBridgeLinker(object):
-    """Minimal linker for page.dump('html') that passes links through as-is.
+    """Minimal linker for page.dump('html') that converts attachment URLs.
 
     page.dump() calls linker.set_path(page) before dumping, so we must
     implement set_path().  The HTML dumper also calls link(), img(),
     resource(), page_object(), file_object() and resolve_source_file().
-    We return links unchanged — web applets handle navigation themselves.
+    
+    For img(), we convert relative paths to /api/attachment/ URLs so that
+    images render correctly in Web Editor Preview. Only HTML format gets
+    URL conversion - raw formats (wiki, markdown, plain) stay unchanged.
     """
 
-    def __init__(self):
+    def __init__(self, page_path=None, format=None):
         self.path = None
+        self._page_path = page_path
+        self._format = format
 
     def set_path(self, page):
         self.path = page
+        # Extract page name for attachment URLs
+        if page and hasattr(page, 'name'):
+            self._page_path = page.name
 
     def link(self, link):
         from moonstone.parse.links import link_type as _link_type
@@ -45,6 +53,27 @@ class _WebBridgeLinker(object):
         return link
 
     def img(self, src):
+        """Convert relative image paths to /api/attachment/ URLs.
+        
+        Only converts for HTML format (used by Preview).
+        Raw formats (wiki, markdown, plain) keep original paths unchanged.
+        
+        Absolute URLs (http://, https://, data:, /) are passed through unchanged.
+        Relative paths like 'photo.jpg' become '/api/attachment/Page/Path/photo.jpg'.
+        """
+        if not src:
+            return src
+        # Only rewrite URLs for HTML output (Preview)
+        # Raw formats should keep original paths
+        if self._format != 'html':
+            return src
+        # Pass through absolute URLs
+        if src.startswith(('http://', 'https://', 'data:', '/')):
+            return src
+        # Convert relative path to attachment API URL
+        if self._page_path:
+            safe_path = self._page_path.replace(':', '/')
+            return '/api/attachment/%s/%s' % (safe_path, src)
         return src
 
     def resource(self, path):
@@ -246,7 +275,7 @@ class NotebookAPI:
                     )
 
                 try:
-                    linker = _WebBridgeLinker()
+                    linker = _WebBridgeLinker(page_path_clean, format)
                     lines = page.dump(format, linker=linker)
                     content = "".join(lines)
                 except Exception as e:
@@ -311,7 +340,7 @@ class NotebookAPI:
                     )
 
                 try:
-                    linker = _WebBridgeLinker()
+                    linker = _WebBridgeLinker(page_path_clean, format)
                     lines = page.dump(format, linker=linker)
                     content = "".join(lines)
                 except Exception:
@@ -745,7 +774,7 @@ class NotebookAPI:
                 # navigation themselves.
                 linker = None
                 if format in ("html", "markdown", "rst"):
-                    linker = _WebBridgeLinker()
+                    linker = _WebBridgeLinker(page_path, format)
 
                 lines = page.dump(format, linker=linker)
                 content = "".join(lines)
@@ -3168,3 +3197,27 @@ class NotebookAPI:
         except Exception as e:
             logger.exception("update_service error")
             return 500, {}, {"error": "Update failed: %s" % str(e)}
+
+    def check_service_updates(self):
+        """GET /api/services/updates — check all git-installed services for updates"""
+        if not self.service_manager:
+            return 503, {}, {"error": "Service manager not available"}
+
+        from moonstone.webbridge.installer import ServiceInstaller
+
+        installer = ServiceInstaller(self.service_manager.services_dir)
+        try:
+            results = installer.check_all_updates()
+            has_updates = any(r.get("has_update") for r in results)
+            return (
+                200,
+                {},
+                {
+                    "services": results,
+                    "count": len(results),
+                    "has_updates": has_updates,
+                },
+            )
+        except Exception as e:
+            logger.exception("check_service_updates error")
+            return 500, {}, {"error": "Check failed: %s" % str(e)}

@@ -155,7 +155,7 @@ function render(list){
  if(!list.length){
   grid.innerHTML='<div class="db-empty"><div class="db-empty-icon">&#x1F4E6;</div>'+
    "<p>No applets installed yet</p>"+
-   '<button class="db-btn" onclick="installFeatured(\'https://github.com/moonstone-app/applet-web-editor\', \'applet\')" style="margin-top:12px;padding:8px 16px;font-size:1rem;background:var(--ms-accent);color:#000;border-radius:var(--ms-radius);cursor:pointer;border:none;">&#xFF0B; Install Web Editor</button>'+
+   '<button class="db-btn" onclick="installFeatured(\'https://github.com/moonstone-pkm/web-editor.git\', \'applet\')" style="margin-top:12px;padding:8px 16px;font-size:1rem;background:var(--ms-accent);color:#000;border-radius:var(--ms-radius);cursor:pointer;border:none;">&#xFF0B; Install Web Editor</button>'+
    '</div>';
   return;
  }
@@ -409,7 +409,7 @@ function loadServices(){
   if(!list.length){
    sg.innerHTML='<div class="db-empty"><div class="db-empty-icon">&#x26A1;</div>'+
     "<p>No services installed yet</p>"+
-    '<button class="db-btn" onclick="installFeatured(\'https://github.com/moonstone-app/service-telegram-notes\', \'service\')" style="margin-top:12px;padding:8px 16px;font-size:1rem;background:var(--ms-accent);color:#000;border-radius:var(--ms-radius);cursor:pointer;border:none;">&#xFF0B; Install Telegram Bridge</button>'+
+    '<button class="db-btn" onclick="installFeatured(\'https://github.com/moonstone-pkm/telegram-notes.git\', \'service\')" style="margin-top:12px;padding:8px 16px;font-size:1rem;background:var(--ms-accent);color:#000;border-radius:var(--ms-radius);cursor:pointer;border:none;">&#xFF0B; Install Telegram Bridge</button>'+
     '</div>';
    return;
   }
@@ -425,10 +425,13 @@ function loadServices(){
    var btnHtml='';
    if(s.has_config)
     btnHtml+='<button class="db-act-btn" data-svc-cfg="'+esc(s.name)+'" title="Configure">\u2699\uFE0F</button>';
+   if(s.source==="git")
+    btnHtml+='<button class="db-act-btn act-update" data-svc="update" data-name="'+esc(s.name)+'" title="Update">\u21BB</button>';
    if(s.status==="running"||s.status==="starting")
     btnHtml+='<button class="db-act-btn act-danger" data-svc="stop" data-name="'+esc(s.name)+'" title="Stop">\u23F9</button>';
    else
     btnHtml+='<button class="db-act-btn act-update" data-svc="start" data-name="'+esc(s.name)+'" title="Start">\u25B6</button>';
+   btnHtml+='<button class="db-act-btn act-danger" data-svc="rm" data-name="'+esc(s.name)+'" data-label="'+esc(s.label||s.name)+'" title="Remove">\u2715</button>';
    c.innerHTML='<div class="db-drag-handle" title="Drag to reorder"></div>'+
     '<div class="db-card-link" style="cursor:default;padding-top:24px;padding-right:24px;padding-bottom:16px">'+
     '<div class="db-card-top"><div class="db-card-icon">'+(s.icon||"\u26A1")+"</div>"+
@@ -459,7 +462,8 @@ $("services").addEventListener("click",function(e){
  var cb=e.target.closest("[data-svc-cfg]");
  if(cb){openSvcConfig(cb.getAttribute("data-svc-cfg"));return;}
  var b=e.target.closest("[data-svc]");if(!b)return;
- var act=b.getAttribute("data-svc"),nm=b.getAttribute("data-name");
+ var act=b.getAttribute("data-svc"),nm=b.getAttribute("data-name"),lb=b.getAttribute("data-label");
+ if(act==="rm"){removeService(nm,lb||nm);return;}
  b.innerHTML='<span class="db-spin"></span>';
  fetch("/api/services/"+nm+"/"+act,{method:"POST"}).then(function(r){return r.json()}).then(function(){
   loadServices();setTimeout(loadServices,2000);
@@ -520,21 +524,43 @@ $("svcCfgSave").addEventListener("click",function(){
 /* --- Check updates --- */
 $("btnUpdates").addEventListener("click",function(){
  var btn=this;btn.disabled=true;btn.style.opacity=".5";
+ var msgs=[],any=false;
+ // Check applets
  fetch("/api/applets/updates").then(function(r){return r.json()}).then(function(d){
+  if(d.applets&&d.applets.length){
+   d.applets.forEach(function(a){
+    if(a.has_update){any=true;msgs.push("[Applet] "+a.name+": update available");
+     var card=$("card-"+a.name);
+     if(card){var h=card.querySelector(".db-card-meta");
+      if(h&&!h.querySelector(".db-tag-update"))h.insertAdjacentHTML("beforeend",' <span class="db-tag db-tag-update">update</span>');}
+    }
+   });
+  }
+  // Check services
+  return fetch("/api/services/updates").then(function(r){return r.json()});
+ }).then(function(d){
+  if(d.services&&d.services.length){
+   d.services.forEach(function(s){
+    if(s.has_update){any=true;msgs.push("[Service] "+s.name+": update available");
+     var card=$("svc-"+s.name);
+     if(card){var h=card.querySelector(".db-card-meta");
+      if(h&&!h.querySelector(".db-tag-update"))h.insertAdjacentHTML("beforeend",' <span class="db-tag db-tag-update">update</span>');}
+    }
+   });
+  }
   btn.disabled=false;btn.style.opacity="";
-  if(!d.applets||!d.applets.length){alert("No git-installed applets to check.");return;}
-  var msgs=[],any=false;
-  d.applets.forEach(function(a){
-   if(a.has_update){any=true;msgs.push(a.name+": update available");
-    var card=$("card-"+a.name);
-    if(card){var h=card.querySelector(".db-card-meta");
-     if(h&&!h.querySelector(".db-tag-update"))h.insertAdjacentHTML("beforeend",' <span class="db-tag db-tag-update">update</span>');}
-   }
-  });
-  if(!any)alert("All applets are up to date \u2714");
+  if(!any)alert("All applets and services are up to date \u2714");
   else alert("Updates available:\n"+msgs.join("\n"));
  }).catch(function(e){btn.disabled=false;btn.style.opacity="";alert(e.message);});
 });
+
+/* --- Service remove --- */
+function removeService(name,label){
+ if(!confirm("Remove service \""+label+"\" and all its files?"))return;
+ fetch("/api/services/"+name,{method:"DELETE"}).then(function(r){return r.json()}).then(function(d){
+  if(d.error)alert(d.error);else loadServices();
+ }).catch(function(e){alert(e.message);});
+}
 
 /* --- Search filter --- */
 $("dashSearch").addEventListener("input", function() {

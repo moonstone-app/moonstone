@@ -483,6 +483,11 @@ def install_service(app, params, environ, start_response, cors_headers):
     status, headers, body = app.api.install_service(data["url"], data.get("branch"), data.get("name"))
     return app._json_response(start_response, status, body, cors_headers, headers)
 
+@router.route("GET", r"^/api/services/updates$")
+def services_updates(app, params, environ, start_response, cors_headers):
+    status, headers, body = app.api.check_service_updates()
+    return app._json_response(start_response, status, body, cors_headers, headers)
+
 @router.route("GET", r"^/api/services/(?P<name>[^/]+)$")
 def get_service(app, params, environ, start_response, cors_headers, name):
     status, headers, body = app.api.get_service(name)
