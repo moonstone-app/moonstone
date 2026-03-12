@@ -76,6 +76,7 @@ class WebBridgeApp:
             if event_manager:
                 self.service_manager.set_event_manager(event_manager)
             self.service_manager.start_health_monitor()
+            self.service_manager.auto_start_services()
             logger.info("ServiceManager initialized: %s", services_dir)
         except Exception:
             logger.debug("ServiceManager not available", exc_info=True)
