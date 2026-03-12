@@ -713,6 +713,12 @@ class MoonstoneServer:
 
         if self._server:
             try:
+                # Stop background services gracefully
+                wsgi_app = getattr(self._server, "application", None)
+                if wsgi_app and getattr(wsgi_app, "service_manager", None):
+                    self._logger.info("Stopping background services...")
+                    wsgi_app.service_manager.stop_all()
+
                 self._server.shutdown()
                 self._server.server_close()
             except Exception:
