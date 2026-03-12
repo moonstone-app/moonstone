@@ -25,7 +25,7 @@ Most of them work with plain text files on your local drive, yet they stubbornly
 
 ---
 
-## 🚀 Welcome to Notes-as-a-Service
+## Welcome to Notes-as-a-Service
 
 **Moonstone** is a fundamentally different approach. It is a powerful, standalone **headless PKM server (no GUI)**. 
 
@@ -40,7 +40,7 @@ moonstone ~/my-vault
 
 ---
 
-## ✨ Core Architecture
+## Core Architecture
 
 ### 1. Universal Knowledge Bridge
 Moonstone isn't just a parasite attached to {Obsidian,Logseq,Zim}. It’s an independent engine that *understands* other formats. It auto-detects your vault type and normalizes tags, internal links (`[[...]]`), and metadata. A simple HTTP request works identically whether Moonstone is serving its own native markdown format, an Obsidian vault, or a Zim wiki.
@@ -63,7 +63,7 @@ WebSockets, SSE, KV-store, OpenAPI specs, AI-ready `dev-bundle` and all the thin
 
 ---
 
-## 🎯 Who is this for?
+## Who is this for?
 
 * **You need** 100% ownership of your data, hosted on your own hardware, with zero subscriptions, but you still demand a modern API and web access.
 * **You want** to build cool UIs, custom AI agents, or automations on top of your notes, but you refuse to learn Electron or wrestle with bloated plugin APIs.
@@ -105,7 +105,7 @@ Open `http://localhost:8090` in your browser. By default, Moonstone serves the W
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Moonstone is an ambitious open-source project aimed at tearing down the walls of the current PKM landscape. 
 
