@@ -1748,9 +1748,24 @@ class NotebookAPI:
 
     # ---- KV Store for Applets ----
 
+    def _get_applet_data_dir(self, applet_name):
+        """Get the _data directory path for an applet.
+
+        Uses the actual applet path from AppletManager (discovered by folder name),
+        not just applets_dir/applet_name. This ensures _data is stored inside
+        the correct applet folder even if the applet's manifest.name differs
+        from its directory name.
+        """
+        if self.applet_manager:
+            applet_obj = self.applet_manager.get_applet(applet_name)
+            if applet_obj:
+                return os.path.join(applet_obj.path, "_data")
+        # Fallback: use applets_dir/applet_name
+        return os.path.join(self.app.applets_dir, applet_name, "_data")
+
     def store_get(self, applet, key=None):
         """GET /api/store/<applet>[/<key>] — get stored data"""
-        store_dir = os.path.join(self.app.applets_dir, applet, "_data")
+        store_dir = self._get_applet_data_dir(applet)
         if key:
             filepath = os.path.join(store_dir, key + ".json")
             if not os.path.isfile(filepath):
@@ -1772,7 +1787,7 @@ class NotebookAPI:
 
     def store_put(self, applet, key, value):
         """PUT /api/store/<applet>/<key> — save data"""
-        store_dir = os.path.join(self.app.applets_dir, applet, "_data")
+        store_dir = self._get_applet_data_dir(applet)
         os.makedirs(store_dir, exist_ok=True)
 
         # Security: prevent path traversal
@@ -1799,7 +1814,7 @@ class NotebookAPI:
 
     def store_delete(self, applet, key):
         """DELETE /api/store/<applet>/<key> — delete stored data"""
-        store_dir = os.path.join(self.app.applets_dir, applet, "_data")
+        store_dir = self._get_applet_data_dir(applet)
         if "/" in key or "\\" in key or ".." in key:
             return 400, {}, {"error": "Invalid key name"}
 
@@ -2321,9 +2336,9 @@ class NotebookAPI:
         if not applet:
             return 404, {}, {"error": "Applet not found: %s" % applet_name}
 
-        # Read config from store
+        # Read config from store (use actual applet path)
         config = {}
-        store_dir = os.path.join(self.app.applets_dir, applet_name, "_data")
+        store_dir = self._get_applet_data_dir(applet_name)
         config_file = os.path.join(store_dir, "_config.json")
         if os.path.isfile(config_file):
             try:
@@ -2354,7 +2369,8 @@ class NotebookAPI:
         if not applet:
             return 404, {}, {"error": "Applet not found: %s" % applet_name}
 
-        store_dir = os.path.join(self.app.applets_dir, applet_name, "_data")
+        # Use actual applet path for config storage
+        store_dir = self._get_applet_data_dir(applet_name)
         os.makedirs(store_dir, exist_ok=True)
         config_file = os.path.join(store_dir, "_config.json")
 

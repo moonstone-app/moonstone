@@ -139,10 +139,30 @@ class AppletManager:
 
     def get_applet(self, name):
         """Get an applet by name.
-        @param name: applet directory name
+
+        First tries to find by directory name (exact match).
+        If not found, searches by manifest.name (case-insensitive,
+        with spaces converted to hyphens).
+
+        @param name: applet directory name or manifest name
         @returns: Applet object or None
         """
-        return self._applets.get(name)
+        # Direct lookup by directory name
+        applet = self._applets.get(name)
+        if applet:
+            return applet
+
+        # Fallback: search by manifest.name
+        # Normalize: "Web Editor" -> "web-editor"
+        normalized = name.lower().replace(" ", "-").replace("_", "-")
+        for applet in self._applets.values():
+            manifest_name = applet.manifest.get("name", "")
+            if manifest_name:
+                manifest_normalized = manifest_name.lower().replace(" ", "-").replace("_", "-")
+                if manifest_normalized == normalized:
+                    return applet
+
+        return None
 
     def serve_file(self, applet_name, file_path):
         """Read a file from an applet directory.
