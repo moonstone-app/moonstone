@@ -38,6 +38,9 @@ Already have notes? Point Moonstone at your **Obsidian**, **Logseq**, or **Zim**
 ```bash
 pipx install git+https://github.com/moonstone-app/moonstone --force --system-site-packages
 moonstone --install-shortcut
+
+# For Debian-based distros run:
+# apt-get install python3-tk
 ```
 
 #### Win/MacOS:
