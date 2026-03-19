@@ -255,6 +255,8 @@ html, body {
   flex: 1;
   overflow: hidden;
   position: relative;
+  display: flex;
+  flex-direction: column;
 }
 
 /* ============================================================
@@ -338,6 +340,7 @@ html, body {
 .ws-panel {
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
