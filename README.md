@@ -33,9 +33,18 @@ Point Moonstone at an empty directory, and it will instantly bootstrap a fully f
 
 Already have notes? Point Moonstone at your **Obsidian**, **Logseq**, or **Zim** folder, and it will effortlessly digest them, translating their unique dialects into a unified API on the fly. 
 
+#### Linux:
+
+```bash
+pipx install git+https://github.com/moonstone-app/moonstone --force --system-site-packages
+moonstone --install-shortcut
+```
+
+#### Win/MacOS:
+
 ```bash
 pipx install git+https://github.com/moonstone-app/moonstone
-moonstone ~/my-vault
+moonstone --install-shortcut
 ```
 
 ---
