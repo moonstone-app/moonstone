@@ -332,7 +332,7 @@ class Index:
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 text = f.read()
-        except (OSError, IOError):
+        except (OSError, IOError, UnicodeDecodeError):
             return
 
         # Remove old tags and links
