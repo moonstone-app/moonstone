@@ -13,6 +13,35 @@ def _get_json_body(app, environ, start_response, cors_headers):
     except json.JSONDecodeError:
         return None
 
+def _parse_int_param(params, key, default=0, max_value=None):
+    """Safely parse an integer parameter.
+    
+    Returns (value, error_message) tuple.
+    On success: (parsed_int, None)
+    On failure: (None, error_string)
+    """
+    values = params.get(key, [])
+    raw_value = values[0] if values else None
+    
+    # Handle missing or empty
+    if raw_value is None or (isinstance(raw_value, str) and raw_value.strip() == ""):
+        return default, None
+    
+    raw_value = raw_value.strip()
+    
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return None, "Invalid '%s' parameter: must be a non-negative integer, got '%s'" % (key, raw_value)
+    
+    if value < 0:
+        return None, "Invalid '%s' parameter: must be a non-negative integer, got '%s'" % (key, raw_value)
+    
+    if max_value is not None and value > max_value:
+        value = max_value
+    
+    return value, None
+
 # ---- Notebook info ----
 @router.route("GET", r"^/api/notebook$")
 def notebook_info(app, params, environ, start_response, cors_headers):
@@ -44,9 +73,13 @@ def capabilities(app, params, environ, start_response, cors_headers):
 def list_pages(app, params, environ, start_response, cors_headers):
     namespace = params.get("namespace", [None])[0]
     limit_str = params.get("limit", [None])[0]
-    offset = int(params.get("offset", ["0"])[0])
+    offset, err = _parse_int_param(params, "offset", default=0)
+    if err:
+        return app._json_response(start_response, 400, {"error": err}, cors_headers)
     if limit_str is not None:
-        limit = min(int(limit_str), 1000)
+        limit, err = _parse_int_param(params, "limit", default=20, max_value=1000)
+        if err:
+            return app._json_response(start_response, 400, {"error": err}, cors_headers)
         status, headers, body = app.api.list_pages_paginated(namespace, limit, offset)
     else:
         status, headers, body = app.api.list_pages_paginated(namespace, None, offset)
@@ -55,7 +88,18 @@ def list_pages(app, params, environ, start_response, cors_headers):
 @router.route("GET", r"^/api/pages/match$")
 def match_pages(app, params, environ, start_response, cors_headers):
     query = params.get("q", [""])[0]
-    limit = min(int(params.get("limit", ["10"])[0]), 50)
+    limit, err = _parse_int_param(params, "limit", default=10, max_value=50)
+    if err:
+        return app._json_response(start_response, 400, {"error": err}, cors_headers)
+    status, headers, body = app.api.match_pages(query, limit)
+    return app._json_response(start_response, status, body, cors_headers, headers)
+
+@router.route("GET", r"^/api/pages/match$")
+def match_pages(app, params, environ, start_response, cors_headers):
+    query = params.get("q", [""])[0]
+    limit, err = _parse_int_param(params, "limit", default=10, max_value=50)
+    if err:
+        return app._json_response(start_response, 400, {"error": err}, cors_headers)
     status, headers, body = app.api.match_pages(query, limit)
     return app._json_response(start_response, status, body, cors_headers, headers)
 
@@ -77,7 +121,9 @@ def search(app, params, environ, start_response, cors_headers):
     query = params.get("q", [""])[0]
     snippets = params.get("snippets", [""])[0].lower() in ("true", "1", "yes")
     if snippets:
-        snippet_len = int(params.get("snippet_length", ["120"])[0])
+        snippet_len, err = _parse_int_param(params, "snippet_length", default=120)
+        if err:
+            return app._json_response(start_response, 400, {"error": err}, cors_headers)
         status, headers, body = app.api.search_pages_with_snippets(query, True, snippet_len)
     else:
         status, headers, body = app.api.search_pages(query)
@@ -169,14 +215,20 @@ def navigate(app, params, environ, start_response, cors_headers):
 # ---- Recent & History ----
 @router.route("GET", r"^/api/recent$")
 def recent(app, params, environ, start_response, cors_headers):
-    limit = min(int(params.get("limit", ["20"])[0]), 100)
-    offset = int(params.get("offset", ["0"])[0])
+    limit, err = _parse_int_param(params, "limit", default=20, max_value=100)
+    if err:
+        return app._json_response(start_response, 400, {"error": err}, cors_headers)
+    offset, err = _parse_int_param(params, "offset", default=0)
+    if err:
+        return app._json_response(start_response, 400, {"error": err}, cors_headers)
     status, headers, body = app.api.get_recent_changes(limit, offset)
     return app._json_response(start_response, status, body, cors_headers, headers)
 
 @router.route("GET", r"^/api/history$")
 def history(app, params, environ, start_response, cors_headers):
-    limit = min(int(params.get("limit", ["50"])[0]), 200)
+    limit, err = _parse_int_param(params, "limit", default=50, max_value=200)
+    if err:
+        return app._json_response(start_response, 400, {"error": err}, cors_headers)
     status, headers, body = app.api.get_history(limit)
     return app._json_response(start_response, status, body, cors_headers, headers)
 
@@ -335,7 +387,9 @@ def delete_attachment(app, params, environ, start_response, cors_headers, page_p
 @router.route("GET", r"^/api/pagetree$")
 def pagetree(app, params, environ, start_response, cors_headers):
     namespace = params.get("namespace", [None])[0]
-    depth = min(int(params.get("depth", ["2"])[0]), 10)
+    depth, err = _parse_int_param(params, "depth", default=2, max_value=10)
+    if err:
+        return app._json_response(start_response, 400, {"error": err}, cors_headers)
     status, headers, body = app.api.get_page_tree(namespace, depth)
     return app._json_response(start_response, status, body, cors_headers, headers)
 
@@ -506,7 +560,10 @@ def service_action(app, params, environ, start_response, cors_headers, name, act
 
 @router.route("GET", r"^/api/services/(?P<name>[^/]+)/logs$")
 def service_logs(app, params, environ, start_response, cors_headers, name):
-    status, headers, body = app.api.get_service_logs(name, min(int(params.get("tail", ["100"])[0]), 1000))
+    tail, err = _parse_int_param(params, "tail", default=100, max_value=1000)
+    if err:
+        return app._json_response(start_response, 400, {"error": err}, cors_headers)
+    status, headers, body = app.api.get_service_logs(name, tail)
     return app._json_response(start_response, status, body, cors_headers, headers)
 
 @router.route("GET", r"^/api/services/(?P<name>[^/]+)/config$")
@@ -531,4 +588,5 @@ def _yield(app, params, environ, start_response, cors_headers):
 @router.route("GET", r"^/api/dev-bundle$")
 def dev_bundle(app, params, environ, start_response, cors_headers):
     return app._serve_dev_bundle(start_response, cors_headers)
+
 
