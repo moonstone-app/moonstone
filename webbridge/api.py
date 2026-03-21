@@ -5,9 +5,9 @@
 Provides endpoints for reading, writing, searching pages and
 managing attachments in the Moonstone notebook.
 
-ALL notebook operations are dispatched to the the main thread via
-idle_add() for thread safety — SQLite objects are bound
-to the thread that created them (the main thread).
+Notebook operations are thread-safe via:
+- ConnectionPool for concurrent database access
+- threading.RLock in Notebook and Index classes
 """
 
 import json
@@ -15,8 +15,6 @@ import logging
 import os
 import threading
 import traceback
-
-from moonstone.mainloop import idle_add
 
 logger = logging.getLogger("moonstone.webbridge")
 
@@ -90,34 +88,20 @@ class _WebBridgeLinker(object):
 
 
 def _run_synchronized(func, timeout=15):
-    """Run a function on the main thread and return the result.
+    """Execute function directly (thread-safe via ConnectionPool and RLock).
+
+    The old implementation blocked on Event.wait() for fake "main thread dispatch".
+    Now that Notebook and Index use ConnectionPool + RLock, we can execute directly.
 
     @param func: callable that returns (status, headers, body)
-    @param timeout: max seconds to wait
+    @param timeout: ignored (kept for backward compatibility)
     @returns: (status, headers, body) tuple
     """
-    result = {"value": None, "error": None, "done": False}
-    event = threading.Event()
-
-    def _wrapper():
-        try:
-            result["value"] = func()
-        except Exception as e:
-            logger.exception("Error in main thread dispatch")
-            result["error"] = e
-        finally:
-            result["done"] = True
-            event.set()
-        return False  # Don't repeat idle callback
-
-    idle_add(_wrapper)
-    event.wait(timeout=timeout)
-
-    if not result["done"]:
-        return 504, {}, {"error": "Timeout waiting for main thread operation"}
-    if result["error"]:
-        return 500, {}, {"error": str(result["error"])}
-    return result["value"]
+    try:
+        return func()
+    except Exception as e:
+        logger.exception("Error in API operation")
+        return 500, {}, {"error": str(e)}
 
 
 class NotebookAPI:
@@ -893,9 +877,11 @@ class NotebookAPI:
             if expected_mtime is not None:
                 try:
                     current_mtime = page.mtime
+                    # Use very small tolerance (0.1ms) for floating point precision
+                    # This catches actual file changes while handling precision issues
                     if (
                         current_mtime is not None
-                        and abs(current_mtime - expected_mtime) > 0.01
+                        and abs(current_mtime - expected_mtime) > 0.0001
                     ):
                         return (
                             409,
@@ -2967,9 +2953,11 @@ class NotebookAPI:
             if expected_mtime is not None:
                 try:
                     current_mtime = page.mtime
+                    # Use very small tolerance (0.1ms) for floating point precision
+                    # This catches actual file changes while handling precision issues
                     if (
                         current_mtime is not None
-                        and abs(current_mtime - expected_mtime) > 0.01
+                        and abs(current_mtime - expected_mtime) > 0.0001
                     ):
                         return (
                             409,

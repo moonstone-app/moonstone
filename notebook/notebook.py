@@ -21,6 +21,7 @@ from moonstone.errors import (
 )
 from moonstone.notebook.page import Path, Page, SourceFile
 from moonstone.notebook.layout import FilesLayout
+from moonstone.notebook.cache import LRUCache
 from moonstone.formats import get_format
 
 logger = logging.getLogger("moonstone.notebook")
@@ -176,8 +177,8 @@ class Notebook(SignalEmitter):
         if hasattr(self.profile, "load_vault_config"):
             self.profile.load_vault_config(self.folder.path)
 
-        # Page cache
-        self._page_cache = {}
+        # Page cache (LRU with max size to prevent memory leak)
+        self._page_cache = LRUCache(maxsize=1000)
         self._lock = threading.RLock()
 
         # Index (lazy init)

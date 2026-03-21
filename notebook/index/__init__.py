@@ -3,6 +3,8 @@
 
 Standalone index module — stores page metadata, tags, and links
 in a SQLite database for fast queries.
+
+Uses ConnectionPool for thread-safe concurrent database access.
 """
 
 import os
@@ -10,6 +12,7 @@ import re
 import sqlite3
 import logging
 import threading
+from contextlib import contextmanager
 
 logger = logging.getLogger("moonstone.index")
 
@@ -73,6 +76,44 @@ def _natural_sort_key(text):
     )
 
 
+class _DatabaseConnectionWrapper:
+    """Wrapper for ConnectionPool that provides SQLite connection interface.
+
+    This wrapper allows the PagesView/TagsView/LinksView classes to work
+    with the connection pool transparently.
+    """
+
+    def __init__(self, pool):
+        self._pool = pool
+
+    def execute(self, sql, params=None):
+        """Execute SQL and return cursor."""
+        return self._pool.execute(sql, params)
+
+    def executemany(self, sql, params):
+        """Execute SQL with multiple parameter sets."""
+        return self._pool.execute(sql, params, many=True)
+
+    def commit(self):
+        """Commit is handled automatically by the pool."""
+        pass
+
+    def cursor(self):
+        """Return a cursor - not supported with pool, use execute() instead."""
+        raise NotImplementedError(
+            "cursor() not supported with connection pool. Use execute() directly."
+        )
+
+    def __getattr__(self, name):
+        """Proxy any other attributes to a temporary connection.
+
+        This handles cases like row_factory, etc.
+        """
+        # Get a connection and proxy the attribute
+        with self._pool.get_connection() as conn:
+            return getattr(conn, name)
+
+
 class Index:
     """SQLite index for the notebook.
 
@@ -84,7 +125,7 @@ class Index:
     - Database connection for PagesView/TagsView/LinksView
     """
 
-    def __init__(self, db_path, layout, root_folder, profile=None):
+    def __init__(self, db_path, layout, root_folder, profile=None, pool_size=4):
         self.db_path = db_path
         self.layout = layout
         self.root_folder = root_folder
@@ -99,26 +140,49 @@ class Index:
         else:
             self.profile = profile
 
-        # Open database
-        self._db = sqlite3.connect(db_path, check_same_thread=False)
-        self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA foreign_keys=ON")
-        self._db.row_factory = sqlite3.Row
+        # Import ConnectionPool
+        from moonstone.notebook.pool import ConnectionPool
 
-        # Create schema
-        self._db.executescript(_SCHEMA)
-        try:
-            self._db.executescript(_FTS_SCHEMA)
-            self._has_fts = True
-        except Exception:
-            self._has_fts = False
-            logger.debug("FTS5 not available")
+        # Create connection pool for concurrent database access
+        self._pool = ConnectionPool(db_path, size=pool_size)
 
-        self._db.commit()
+        # Initialize schema using pool
+        with self._pool.get_connection() as conn:
+            conn.executescript(_SCHEMA)
+            try:
+                conn.executescript(_FTS_SCHEMA)
+                self._has_fts = True
+            except Exception:
+                self._has_fts = False
+                logger.debug("FTS5 not available")
+            conn.commit()
 
     @property
     def db(self):
-        return self._db
+        """Return database connection wrapper for backward compatibility.
+
+        The wrapper uses the connection pool internally, allowing concurrent
+        database access while maintaining the same API as before.
+        """
+        if not hasattr(self, '_db_wrapper'):
+            self._db_wrapper = _DatabaseConnectionWrapper(self._pool)
+        return self._db_wrapper
+
+    @contextmanager
+    def get_connection(self):
+        """Get a connection from the pool for direct database access.
+
+        Use this when you need to execute multiple statements in a transaction
+        or need access to raw connection features.
+
+        Example:
+            with index.get_connection() as conn:
+                conn.execute("INSERT INTO pages ...")
+                conn.execute("INSERT INTO links ...")
+                conn.commit()
+        """
+        with self._pool.get_connection() as conn:
+            yield conn
 
     @property
     def is_uptodate(self):
@@ -147,7 +211,7 @@ class Index:
                 self._scan_directory(self.root_folder, None, "")
 
             self._is_uptodate = True
-            self._db.commit()
+            # Commit is handled automatically by pool
             logger.info("Index rebuild complete")
 
     # Regex to detect git merge conflict artifact filenames
@@ -278,12 +342,12 @@ class Index:
     ):
         """Insert or update a page record."""
         sortkey = _natural_sort_key(basename)
-        row = self._db.execute(
+        row = self._pool.execute(
             "SELECT id FROM pages WHERE name = ?", (name,)
         ).fetchone()
 
         if row:
-            self._db.execute(
+            self._pool.execute(
                 """
                 UPDATE pages SET parent=?, basename=?, sortkey=?,
                     hascontent=?, haschildren=?, mtime=?, ctime=?
@@ -302,7 +366,7 @@ class Index:
             )
             return row[0]
         else:
-            cursor = self._db.execute(
+            cursor = self._pool.execute(
                 """
                 INSERT INTO pages (parent, basename, name, sortkey,
                     hascontent, haschildren, mtime, ctime)
@@ -335,55 +399,57 @@ class Index:
         except (OSError, IOError, UnicodeDecodeError):
             return
 
-        # Remove old tags and links
-        self._db.execute("DELETE FROM tagsources WHERE source = ?", (page_id,))
-        self._db.execute("DELETE FROM links WHERE source = ?", (page_id,))
+        # Use single connection for transaction
+        with self.get_connection() as conn:
+            # Remove old tags and links
+            conn.execute("DELETE FROM tagsources WHERE source = ?", (page_id,))
+            conn.execute("DELETE FROM links WHERE source = ?", (page_id,))
 
-        # Extract tags using profile (handles @tag, #tag, YAML frontmatter)
-        for tag_name in self.profile.extract_tags(text):
-            tag_id = self._ensure_tag(tag_name)
-            try:
-                self._db.execute(
-                    "INSERT OR IGNORE INTO tagsources (tag, source) VALUES (?, ?)",
-                    (tag_id, page_id),
+            # Extract tags using profile (handles @tag, #tag, YAML frontmatter)
+            for tag_name in self.profile.extract_tags(text):
+                tag_id = self._ensure_tag(tag_name)
+                try:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO tagsources (tag, source) VALUES (?, ?)",
+                        (tag_id, page_id),
+                    )
+                except sqlite3.IntegrityError:
+                    pass
+
+            # Extract links using profile (handles [[Target]], [[Target|Label]], anchors)
+            for target_raw, _display in self.profile.extract_links(text):
+                # Convert link target to internal page name
+                target_name = self.profile.link_target_to_page_name(target_raw)
+                if not target_name:
+                    continue
+
+                # Find or create target page entry
+                target_id = self._ensure_page_ref(target_name)
+                if target_id:
+                    conn.execute(
+                        "INSERT INTO links (source, target, rel, names) VALUES (?, ?, 0, ?)",
+                        (page_id, target_id, target_raw),
+                    )
+
+            # Update FTS — strip metadata for clean full-text search
+            if self._has_fts:
+                _meta, body = self.profile.strip_metadata(text)
+                conn.execute(
+                    "INSERT OR REPLACE INTO pages_fts (rowid, name, content) VALUES (?, ?, ?)",
+                    (page_id, name, body),
                 )
-            except sqlite3.IntegrityError:
-                pass
-
-        # Extract links using profile (handles [[Target]], [[Target|Label]], anchors)
-        for target_raw, _display in self.profile.extract_links(text):
-            # Convert link target to internal page name
-            target_name = self.profile.link_target_to_page_name(target_raw)
-            if not target_name:
-                continue
-
-            # Find or create target page entry
-            target_id = self._ensure_page_ref(target_name)
-            if target_id:
-                self._db.execute(
-                    "INSERT INTO links (source, target, rel, names) VALUES (?, ?, 0, ?)",
-                    (page_id, target_id, target_raw),
-                )
-
-        # Update FTS — strip metadata for clean full-text search
-        if self._has_fts:
-            _meta, body = self.profile.strip_metadata(text)
-            self._db.execute(
-                "INSERT OR REPLACE INTO pages_fts (rowid, name, content) VALUES (?, ?, ?)",
-                (page_id, name, body),
-            )
 
     def _ensure_tag(self, name):
         """Get or create a tag and return its id."""
-        row = self._db.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()
+        row = self._pool.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()
         if row:
             return row[0]
-        cursor = self._db.execute("INSERT INTO tags (name) VALUES (?)", (name,))
+        cursor = self._pool.execute("INSERT INTO tags (name) VALUES (?)", (name,))
         return cursor.lastrowid
 
     def _ensure_page_ref(self, name):
         """Get page id by name. If not found, create a placeholder."""
-        row = self._db.execute(
+        row = self._pool.execute(
             "SELECT id FROM pages WHERE name = ?", (name,)
         ).fetchone()
         if row:
@@ -392,7 +458,7 @@ class Index:
         # Create a placeholder for referenced but non-existent pages
         basename = name.split(":")[-1] if ":" in name else name
         sortkey = _natural_sort_key(basename)
-        cursor = self._db.execute(
+        cursor = self._pool.execute(
             """
             INSERT OR IGNORE INTO pages (parent, basename, name, sortkey, hascontent, haschildren)
             VALUES (NULL, ?, ?, ?, 0, 0)
@@ -403,7 +469,7 @@ class Index:
             return cursor.lastrowid
 
         # Re-query if INSERT OR IGNORE didn't insert
-        row = self._db.execute(
+        row = self._pool.execute(
             "SELECT id FROM pages WHERE name = ?", (name,)
         ).fetchone()
         return row[0] if row else None
@@ -434,7 +500,7 @@ class Index:
             parent_id = None
             if ":" in name:
                 parent_name = name.rsplit(":", 1)[0]
-                row = self._db.execute(
+                row = self._pool.execute(
                     "SELECT id FROM pages WHERE name = ?", (parent_name,)
                 ).fetchone()
                 if row:
@@ -457,26 +523,25 @@ class Index:
             if hascontent:
                 self._index_page_content(page_id, name, file_path)
 
-            self._db.commit()
-
     def remove_page(self, path):
         """Remove a page from the index."""
         with self._lock:
             name = path.name if hasattr(path, "name") else str(path)
-            row = self._db.execute(
+            row = self._pool.execute(
                 "SELECT id FROM pages WHERE name = ?", (name,)
             ).fetchone()
             if row:
                 page_id = row[0]
-                self._db.execute("DELETE FROM tagsources WHERE source = ?", (page_id,))
-                self._db.execute("DELETE FROM links WHERE source = ?", (page_id,))
-                self._db.execute("DELETE FROM links WHERE target = ?", (page_id,))
-                self._db.execute("DELETE FROM pages WHERE id = ?", (page_id,))
-                if self._has_fts:
-                    self._db.execute(
-                        "DELETE FROM pages_fts WHERE rowid = ?", (page_id,)
-                    )
-                self._db.commit()
+                # Use single connection for transaction
+                with self.get_connection() as conn:
+                    conn.execute("DELETE FROM tagsources WHERE source = ?", (page_id,))
+                    conn.execute("DELETE FROM links WHERE source = ?", (page_id,))
+                    conn.execute("DELETE FROM links WHERE target = ?", (page_id,))
+                    conn.execute("DELETE FROM pages WHERE id = ?", (page_id,))
+                    if self._has_fts:
+                        conn.execute(
+                            "DELETE FROM pages_fts WHERE rowid = ?", (page_id,)
+                        )
 
     def move_page(self, oldpath, newpath):
         """Update the index for a moved page."""
@@ -486,25 +551,25 @@ class Index:
             new_basename = new_name.split(":")[-1] if ":" in new_name else new_name
             new_sortkey = _natural_sort_key(new_basename)
 
-            self._db.execute(
-                """
-                UPDATE pages SET name=?, basename=?, sortkey=?
-                WHERE name=?
-            """,
-                (new_name, new_basename, new_sortkey, old_name),
-            )
-
-            # Also update child pages
-            prefix = old_name + ":"
-            new_prefix = new_name + ":"
-            for row in self._db.execute(
-                "SELECT id, name FROM pages WHERE name LIKE ?", (prefix + "%",)
-            ).fetchall():
-                child_new = new_prefix + row["name"][len(prefix) :]
-                child_basename = child_new.split(":")[-1]
-                self._db.execute(
-                    "UPDATE pages SET name=?, basename=? WHERE id=?",
-                    (child_new, child_basename, row["id"]),
+            # Use single connection for transaction
+            with self.get_connection() as conn:
+                conn.execute(
+                    """
+                    UPDATE pages SET name=?, basename=?, sortkey=?
+                    WHERE name=?
+                """,
+                    (new_name, new_basename, new_sortkey, old_name),
                 )
 
-            self._db.commit()
+                # Also update child pages
+                prefix = old_name + ":"
+                new_prefix = new_name + ":"
+                for row in conn.execute(
+                    "SELECT id, name FROM pages WHERE name LIKE ?", (prefix + "%",)
+                ).fetchall():
+                    child_new = new_prefix + row["name"][len(prefix) :]
+                    child_basename = child_new.split(":")[-1]
+                    conn.execute(
+                        "UPDATE pages SET name=?, basename=? WHERE id=?",
+                        (child_new, child_basename, row["id"]),
+                    )
