@@ -133,11 +133,12 @@ class MoonstoneTray:
     """
 
     def __init__(
-        self, settings, on_restart, on_quit, server_info=None, save_settings=None
+        self, settings, on_restart, on_quit, on_rebuild=None, server_info=None, save_settings=None
     ):
         self._settings = settings
         self._on_restart = on_restart
         self._on_quit = on_quit
+        self._on_rebuild = on_rebuild
         self._server_info = server_info or (lambda: {})
         self._save_settings = save_settings
         self._icon = None
@@ -287,6 +288,11 @@ class MoonstoneTray:
             self._icon.stop()
         self._on_quit()
 
+    def _do_rebuild(self, icon, item):
+        logger.info("Rebuild database requested from tray")
+        if self._on_rebuild:
+            threading.Thread(target=self._on_rebuild, daemon=True).start()
+
     # ---- Menu building ----
 
     def _build_menu(self):
@@ -401,6 +407,7 @@ class MoonstoneTray:
                 ),
             ),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem("🔄 Rebuild Database", self._do_rebuild),
             pystray.MenuItem("🔄 Restart Server", self._do_restart),
             pystray.MenuItem("❌ Quit", self._do_quit),
         )

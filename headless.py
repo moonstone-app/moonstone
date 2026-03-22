@@ -284,6 +284,11 @@ def parse_args():
         action="store_true",
         help="Disable system tray icon (console-only mode)",
     )
+    parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="Rebuild database index and exit",
+    )
     return parser.parse_args()
 
 
@@ -749,6 +754,27 @@ def main():
     saved = msettings.load()
     settings = msettings.merge_cli_args(args, saved)
 
+    # ---- Rebuild database index (exit immediately) ----
+    if args.rebuild:
+        notebook_path = settings.get("notebook", "")
+        if not notebook_path:
+            print("ERROR: No notebook specified.", file=sys.stderr)
+            sys.exit(1)
+        from moonstone.notebook import resolve_notebook, build_notebook
+
+        try:
+            notebookinfo = resolve_notebook(notebook_path)
+            if notebookinfo is None:
+                print(f"ERROR: Notebook not found: {notebook_path}", file=sys.stderr)
+                sys.exit(1)
+            notebook, _ = build_notebook(notebookinfo)
+            notebook.index.check_and_update()
+            print("Database index rebuilt successfully")
+        except Exception as e:
+            print(f"ERROR: Failed to rebuild index: {e}", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
+
     # Setup logging
     if settings.get("debug"):
         level = logging.DEBUG
@@ -820,6 +846,19 @@ def main():
         # Force exit since pystray may have already stopped
         os._exit(0)
 
+    # ---- Rebuild database callback ----
+    def on_rebuild():
+        logger.info("Rebuilding database index...")
+        try:
+            notebook = _server_box[0]._notebook
+            if notebook:
+                notebook.index.check_and_update()
+                logger.info("Database index rebuilt successfully")
+            else:
+                logger.warning("No notebook available to rebuild")
+        except Exception as e:
+            logger.error("Failed to rebuild database index: %s", e)
+
     # ---- Start server if we have a notebook ----
     tray = None
 
@@ -843,6 +882,7 @@ def main():
                 settings=settings,
                 on_restart=on_restart,
                 on_quit=on_quit,
+                on_rebuild=on_rebuild,
                 server_info=get_server_info,
                 save_settings=msettings.save,
             )
