@@ -196,6 +196,16 @@ class Index:
         prefix from page names.
         """
         with self._lock:
+            # Clear stale entries before rebuilding to prevent duplicates
+            with self.get_connection() as conn:
+                conn.execute("DELETE FROM tagsources")
+                conn.execute("DELETE FROM links")
+                conn.execute("DELETE FROM tags")
+                conn.execute("DELETE FROM pages")
+                if self._has_fts:
+                    conn.execute("DELETE FROM pages_fts")
+                conn.commit()
+
             logger.info("Rebuilding index from filesystem...")
 
             content_dirs = getattr(self.profile, "content_dirs", None)

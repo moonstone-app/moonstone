@@ -34,8 +34,13 @@ def _schemas():
                 "haschildren": {"type": "boolean"},
                 "mtime": {"type": "number", "nullable": True},
                 "ctime": {"type": "number", "nullable": True},
+                "is_binary": {"type": "boolean", "nullable": True, "description": "True for binary files"},
+                "mime_type": {"type": "string", "nullable": True, "example": "image/png"},
+                "file_size": {"type": "integer", "nullable": True, "description": "File size in bytes"},
+                "attachment_url": {"type": "string", "nullable": True, "description": "URL to download raw binary content"},
             },
         },
+
         "TagInfo": {
             "type": "object",
             "properties": {
@@ -587,22 +592,15 @@ def _paths_page_crud():
                 ],
                 "responses": {
                     "200": {
-                        "description": "Page created",
+                        "description": "Page content",
                         "content": {
                             "application/json": {
-                                "schema": {"$ref": "#/components/schemas/OkResponse"}
+                                "schema": {"$ref": "#/components/schemas/PageContent"}
                             }
                         },
                     },
                     "403": _err_responses["403"],
-                    "409": {
-                        "description": "Page already exists",
-                        "content": {
-                            "application/json": {
-                                "schema": {"$ref": "#/components/schemas/Error"}
-                            }
-                        },
-                    },
+                    "404": _err_responses["404"],
                 },
             },
             "patch": {
@@ -1176,6 +1174,46 @@ def _paths_page_sub():
                             "application/json": {
                                 "schema": {"$ref": "#/components/schemas/Error"}
                             }
+                        },
+                    },
+                },
+            },
+        },
+        "/api/page/{page_path}/raw": {
+            "get": {
+                "tags": ["Page Operations"],
+                "summary": "Get raw binary content of a page file",
+                "operationId": "getPageRaw",
+                "description": "Returns the raw binary content of a page file (e.g., images, PDFs). For text pages, returns the raw file content.",
+                "parameters": [_pp],
+                "responses": {
+                    "200": {
+                        "description": "Raw file content",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary",
+                                }
+                            }
+                        },
+                    },
+                    "403": {
+                        "description": "Access denied (path traversal attempt)",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/Error"}}
+                        },
+                    },
+                    "404": {
+                        "description": "Page or file not found",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/Error"}}
+                        },
+                    },
+                    "500": {
+                        "description": "Failed to read file",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/Error"}}
                         },
                     },
                 },

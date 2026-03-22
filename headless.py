@@ -93,11 +93,12 @@ class _NotebookEventHandler(FileSystemEventHandler):
     @param extensions: tuple of watched file extensions
     """
 
-    def __init__(self, notebook_path, callback, extensions=(".txt", ".md", ".wiki")):
+    def __init__(self, notebook_path, callback, extensions=(".txt", ".md", ".wiki"), use_filename_spaces=False):
         super().__init__()
         self._path = notebook_path
         self._callback = callback
         self._extensions = extensions
+        self._use_filename_spaces = use_filename_spaces
         self._logger = logging.getLogger("moonstone.watcher")
 
     def _is_page_file(self, path):
@@ -111,7 +112,8 @@ class _NotebookEventHandler(FileSystemEventHandler):
                 rel = rel[: -len(ext)]
                 break
         page_name = rel.replace(os.sep, ":")
-        page_name = page_name.replace("_", " ")
+        if not self._use_filename_spaces:
+            page_name = page_name.replace("_", " ")
         return page_name
 
     def _fire(self, event_type, file_path):
@@ -156,16 +158,18 @@ class FileWatcher:
     @param extensions: tuple of watched file extensions
     """
 
-    def __init__(self, notebook_path, callback, extensions=(".txt", ".md", ".wiki")):
+    def __init__(self, notebook_path, callback, extensions=(".txt", ".md", ".wiki"), use_filename_spaces=False):
         self._path = notebook_path
         self._callback = callback
         self._extensions = extensions
+        self._use_filename_spaces = use_filename_spaces
         self._logger = logging.getLogger("moonstone.watcher")
         self._observer = Observer()
         self._handler = _NotebookEventHandler(
             notebook_path,
             callback,
             extensions,
+            use_filename_spaces,
         )
 
     def start(self):
@@ -603,7 +607,8 @@ class MoonstoneServer:
                     },
                 )
 
-        self._file_watcher = FileWatcher(notebook_path, _on_file_change)
+        use_filename_spaces = notebook.profile.use_filename_spaces if notebook.profile else False
+        self._file_watcher = FileWatcher(notebook_path, _on_file_change, use_filename_spaces=use_filename_spaces)
         self._file_watcher.start()
 
         # Create HTTP server (with port fallback)

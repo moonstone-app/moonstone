@@ -375,6 +375,26 @@ class SourceFile:
             return os.path.realpath(self.path) == os.path.realpath(other.path)
         return False
 
+    def is_binary(self) -> bool:
+        """Detect if file is binary without raising exceptions.
+
+        Returns:
+            True if file is binary (contains null bytes in first 8KB).
+            True for unreadable files (fail-safe).
+            False for text files and empty files.
+        """
+        try:
+            with open(self.path, "rb") as f:
+                chunk = f.read(8192)  # Read first 8KB
+                if not chunk:
+                    # Empty file - treat as text
+                    return False
+                # Null byte detection - presence indicates binary
+                return b"\x00" in chunk
+        except (OSError, IOError, PermissionError):
+            # Fail-safe: assume binary for unreadable files
+            return True
+
 
 class Page(Path, SignalEmitter):
     """Represents a single page in the notebook.

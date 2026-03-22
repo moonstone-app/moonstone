@@ -6,7 +6,7 @@ Moonstone's own format — a standalone PKM system:
 - #tag syntax (standard Markdown hashtags)
 - [[Page:Name]] wiki links with `:` namespace separator
 - Attachments in page-named folders
-- Underscores instead of spaces in filenames
+- Filenames preserved as-is (no underscore/space conversion)
 """
 
 import re
@@ -33,7 +33,7 @@ class MoonstoneProfile(BaseProfile):
 
     # Namespaces
     namespace_separator = ":"
-    use_filename_spaces = False  # spaces → underscores (Moonstone convention)
+    use_filename_spaces = True  # preserve filenames as-is (underscores stay underscores)
 
     # Metadata — YAML frontmatter
     metadata_format = "yaml_frontmatter"

@@ -313,6 +313,18 @@ def page_export(app, params, environ, start_response, cors_headers, page_path):
     return app._json_response(start_response, status, body, cors_headers, headers)
 
 # ---- Page CRUD ----
+@router.route("GET", r"^/api/page/(?P<page_path>.+)/raw$")
+def page_get_raw(app, params, environ, start_response, cors_headers, page_path):
+    result = app.api.get_page_raw(page_path)
+    status, headers, body = result
+    # Binary response - not JSON
+    if isinstance(body, bytes):
+        response_headers = cors_headers + list(headers.items())
+        response_headers.append(("Content-Length", str(len(body))))
+        start_response(app._status_string(status), response_headers)
+        return [body]
+    return app._json_response(start_response, status, body, cors_headers, headers)
+
 @router.route("GET", r"^/api/page/(?P<page_path>.+)$")
 def page_get(app, params, environ, start_response, cors_headers, page_path):
     fmt = params.get("format", ["wiki"])[0]

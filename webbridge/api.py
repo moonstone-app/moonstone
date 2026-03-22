@@ -12,9 +12,11 @@ Notebook operations are thread-safe via:
 
 import json
 import logging
+import mimetypes
 import os
 import threading
 import traceback
+import urllib.parse
 
 logger = logging.getLogger("moonstone.webbridge")
 
@@ -737,6 +739,45 @@ class NotebookAPI:
                     },
                 )
 
+            # Check if this is a binary file before trying to read as text
+            source = getattr(page, "source", None) or getattr(page, "source_file", None)
+            if source is not None and hasattr(source, "is_binary") and source.is_binary():
+                # Get mime type and file size
+                file_path = getattr(source, "path", None)
+                mime_type = "application/octet-stream"
+                file_size = 0
+
+                try:
+                    if file_path and os.path.isfile(file_path):
+                        file_size = os.path.getsize(file_path)
+                        guessed = mimetypes.guess_type(file_path)[0]
+                        if guessed:
+                            mime_type = guessed
+                except (OSError, IOError) as e:
+                    logger.warning("Error getting file info for %s: %s", page_path, e)
+
+                if file_size == 0:
+                    logger.debug("Cannot get file info for binary %s, using defaults", page.name)
+
+                encoded_path = urllib.parse.quote(page.name, safe='')
+                return (
+                    200,
+                    {},
+                    {
+                        "name": page.name,
+                        "basename": page.basename,
+                        "title": page.get_title(),
+                        "content": "",
+                        "format": format,
+                        "exists": True,
+                        "haschildren": page.haschildren,
+                        "is_binary": True,
+                        "mime_type": mime_type,
+                        "file_size": file_size,
+                        "attachment_url": "/api/page/%s/raw" % encoded_path,
+                    },
+                )
+
             if format not in ("wiki", "html", "plain", "markdown"):
                 return (
                     400,
@@ -786,6 +827,41 @@ class NotebookAPI:
                         and hasattr(source, "path")
                         and os.path.isfile(source.path)
                     ):
+                        # Secondary binary check - catch files that bypassed earlier detection
+                        if hasattr(source, "is_binary") and source.is_binary():
+                            logger.warning(
+                                "Binary file bypassed earlier detection: %s", page_path
+                            )
+                            file_path = source.path
+                            mime_type = "application/octet-stream"
+                            file_size = 0
+                            try:
+                                file_size = os.path.getsize(file_path)
+                                guessed = mimetypes.guess_type(file_path)[0]
+                                if guessed:
+                                    mime_type = guessed
+                            except (OSError, IOError) as e:
+                                logger.warning(
+                                    "Error getting file info for %s: %s", page_path, e
+                                )
+                            encoded_path = urllib.parse.quote(page.name, safe='')
+                            return (
+                                200,
+                                {},
+                                {
+                                    "name": page.name,
+                                    "basename": page.basename,
+                                    "title": page.get_title(),
+                                    "content": "",
+                                    "format": format,
+                                    "exists": True,
+                                    "haschildren": page.haschildren,
+                                    "is_binary": True,
+                                    "mime_type": mime_type,
+                                    "file_size": file_size,
+                                    "attachment_url": "/api/page/%s/raw" % encoded_path,
+                                },
+                            )
                         with open(source.path, "r", encoding="utf-8") as f:
                             content = f.read()
                         actual_format = "wiki"
@@ -851,6 +927,46 @@ class NotebookAPI:
                     "ctime": page_ctime,
                 },
             )
+
+        return _run_synchronized(_do)
+
+    def get_page_raw(self, page_path):
+        """GET /api/page/<path>/raw — get raw binary content of a page file"""
+
+        def _do():
+            from moonstone.notebook import Path
+
+            try:
+                path = self.notebook.pages.lookup_from_user_input(page_path)
+                page = self.notebook.get_page(path)
+            except Exception as e:
+                return 404, {}, {"error": "Page not found: %s" % page_path, "details": str(e)}
+
+            source = getattr(page, "source", None) or getattr(page, "source_file", None)
+            if source is None or not hasattr(source, "path"):
+                return 404, {}, {"error": "No source file for page"}
+
+            file_path = source.path
+            if not os.path.isfile(file_path):
+                return 404, {}, {"error": "Source file not found"}
+
+            # Security: ensure file is within notebook directory
+            real_file = os.path.realpath(file_path)
+            real_notebook = os.path.realpath(self.notebook.folder.path)
+            if not real_file.startswith(real_notebook + os.sep) and real_file != real_notebook:
+                return 403, {}, {"error": "Access denied"}
+
+            # Determine content type
+            mime_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+
+            # Read binary content
+            try:
+                with open(file_path, "rb") as f:
+                    content = f.read()
+            except (OSError, IOError) as e:
+                return 500, {}, {"error": "Failed to read file: %s" % str(e)}
+
+            return 200, {"Content-Type": mime_type}, content
 
         return _run_synchronized(_do)
 
