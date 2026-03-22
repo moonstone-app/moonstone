@@ -10,6 +10,8 @@
 
 set -e
 
+ulimit -n 4096
+
 # Default options (use array for proper argument handling)
 PYTEST_ARGS=("-v")
 TEST_PATH=("tests/")
