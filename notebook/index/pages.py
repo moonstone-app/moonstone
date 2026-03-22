@@ -90,7 +90,7 @@ class PagesView:
 
     def lookup_from_user_input(self, name):
         """Resolve user input to a Path."""
-        name = name.strip().replace("_", " ").strip(":")
+        name = name.strip().strip(":")
         return Path(name)
 
     def lookup_by_pagename(self, name):
