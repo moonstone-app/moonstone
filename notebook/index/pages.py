@@ -107,6 +107,34 @@ class PagesView:
             return _row_to_pageinfo(row)
         return None
 
+    def lookup_by_alias(self, alias):
+        """Look up a page by its alias.
+
+        Performs case-insensitive lookup using the aliases table.
+
+        @param alias: Alias name to search for
+        @returns: PageInfo or None
+        """
+        if not alias:
+            return None
+        
+        alias_lower = alias.lower().strip()
+        if not alias_lower:
+            return None
+        
+        row = self._db.execute(
+            """
+            SELECT p.* FROM pages p
+            JOIN aliases a ON p.id = a.page
+            WHERE a.name_lower = ?
+            """,
+            (alias_lower,)
+        ).fetchone()
+        
+        if row:
+            return _row_to_pageinfo(row)
+        return None
+
     def list_pages(self, path=None):
         """List direct children of a page (or root if path is None/root).
 

@@ -71,24 +71,47 @@ class BaseProfile:
         return [m.group(1) for m in re.finditer(self.tag_regex, text)]
 
     def extract_links(self, text):
-        """Extract link targets from raw page text.
+        """Extract [[wiki links]] from text.
 
         @param text: raw file content string
-        @returns: list of (raw_target, display_text_or_None) tuples
+        @returns: list of (target, heading_anchor, block_id, display_text) tuples
+            - target: page name (str or None)
+            - heading_anchor: heading after # (str or None)
+            - block_id: block ref after ^ (str or None)
+            - display_text: display text after | (str or None)
         """
         text = self._strip_code_blocks(text)
         results = []
         for m in re.finditer(self.link_regex, text):
             full = m.group(0)
-            target = m.group(1).strip()
-            # Check for |display text
+            raw_target = m.group(1).strip()
+
+            # Extract display_text from |... if present
+            display_text = None
             if "|" in full:
                 parts = full[2:-2].split("|", 1)
-                target = parts[0].strip()
-                display = parts[1].strip() if len(parts) > 1 else None
-            else:
-                display = None
-            results.append((target, display))
+                raw_target = parts[0].strip()
+                display_text = parts[1].strip() if len(parts) > 1 else None
+
+            # Parse heading_anchor (#heading) and block_id (^blockid) from target
+            heading_anchor = None
+            block_id = None
+            if "#" in raw_target:
+                target_parts = raw_target.split("#", 1)
+                raw_target = target_parts[0]
+                heading_anchor = target_parts[1] if len(target_parts) > 1 else None
+                # Check for block_id in heading part
+                if heading_anchor and "^" in heading_anchor:
+                    heading_parts = heading_anchor.split("^", 1)
+                    heading_anchor = heading_parts[0]
+                    block_id = heading_parts[1] if len(heading_parts) > 1 else None
+            elif "^" in raw_target:
+                # Block ID directly on target without heading
+                target_parts = raw_target.split("^", 1)
+                raw_target = target_parts[0]
+                block_id = target_parts[1] if len(target_parts) > 1 else None
+
+            results.append((raw_target, heading_anchor, block_id, display_text))
         return results
 
     def format_tag(self, tag_name):

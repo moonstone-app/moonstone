@@ -27,9 +27,10 @@ class ObsidianProfile(BaseProfile):
 
     # Tags: #tag (but not inside code blocks or headings like ## )
     tag_prefix = "#"
-    tag_regex = r"(?<![#\w])#([\w][\w/-]*)"
-    # Negative lookbehind for # prevents matching ## headings
-    # Matches: #tag #nested/tag #tag-name
+    tag_regex = r"(?<![#\w])#([^\s#|\\[\]{}()<>*~`'\"!,;@%&=]+)"
+    # Negative lookbehind prevents matching ## headings or email@#
+    # Matches: #tag #nested/tag #tag-name #2024-goals #C++ #v1.2.3
+    # Also matches Unicode: #中文 #проект #プロジェクト
     # Skips: ## heading, ```#comment```, email@#
 
     # Links: [[Page Name]] or [[Page Name|Display]]
@@ -153,11 +154,23 @@ class ObsidianProfile(BaseProfile):
     def extract_links(self, text):
         """Extract [[wiki links]] from Obsidian markdown.
 
+        Returns:
+            List[Tuple[target, heading_anchor, block_id, display_text]]:
+                - target: page name (str or None)
+                - heading_anchor: heading after # (str or None)
+                - block_id: block ref after ^ (str or None)
+                - display_text: display text after | (str or None)
+
         Handles:
-        - [[Page Name]]
-        - [[Page Name|Display Text]]
-        - [[Page Name#Heading]]
-        - [[Page Name#Heading|Display]]
+        - [[Page]] → ("Page", None, None, None)
+        - [[Page|Display]] → ("Page", None, None, "Display")
+        - [[Page#Heading]] → ("Page", "Heading", None, None)
+        - [[Page#Heading|Display]] → ("Page", "Heading", None, "Display")
+        - [[#Heading]] → (None, "Heading", None, None)
+        - [[Page^blockid]] → ("Page", None, "blockid", None)
+        - [[Page#Heading^blockid]] → ("Page", "Heading", "blockid", None)
+        - [[Page^blockid|Display]] → ("Page", None, "blockid", "Display")
+        - [[#Heading^blockid]] → (None, "Heading", "blockid", None)
         """
         results = []
         _, body = self.strip_metadata(text)
@@ -169,23 +182,63 @@ class ObsidianProfile(BaseProfile):
         # Full regex: capture everything inside [[ ]]
         for m in re.finditer(r"\[\[([^\]]+?)\]\]", cleaned):
             content = m.group(1)
-            # Split by | for display text
+            # Step 1: Split by | to get target_part and display
             if "|" in content:
                 target_part, display = content.split("|", 1)
             else:
                 target_part = content
                 display = None
 
-            # Split by # for anchor
+            # Step 2: Split target_part by # to get target and heading_anchor
             if "#" in target_part:
-                target = target_part.split("#", 1)[0].strip()
+                target, heading_anchor = target_part.split("#", 1)
+                target = target.strip()
+                heading_anchor = heading_anchor.strip()
             else:
                 target = target_part.strip()
+                heading_anchor = None
 
-            if target:
-                results.append((target, display.strip() if display else None))
+            # Step 3: Check for block refs (^) in heading_anchor or target
+            block_id = None
+            if heading_anchor and "^" in heading_anchor:
+                parts = heading_anchor.split("^", 1)
+                heading_anchor = parts[0].strip() if parts[0] else None
+                block_id = parts[1].strip() if len(parts) > 1 else None
+            elif target and "^" in target:
+                parts = target.split("^", 1)
+                target = parts[0].strip()
+                block_id = parts[1].strip() if len(parts) > 1 else None
+
+            if target or heading_anchor:
+                results.append((
+                    target if target else None,
+                    heading_anchor if heading_anchor else None,
+                    block_id,
+                    display.strip() if display else None
+                ))
 
         return results
+
+    def extract_aliases(self, text):
+        """Extract aliases from YAML frontmatter.
+
+        Returns:
+            List of alias strings with original casing.
+
+        Handles:
+        - aliases: [One, Two]
+        - aliases:
+            - One
+            - Two
+        """
+        meta, _ = self.strip_metadata(text)
+        aliases = meta.get("aliases", [])
+        if isinstance(aliases, list):
+            return [a.strip() for a in aliases if isinstance(a, str)]
+        elif isinstance(aliases, str):
+            # Single alias as string
+            return [aliases.strip()]
+        return []
 
     def link_target_to_page_name(self, target):
         """Convert Obsidian link target to internal page name.
@@ -254,7 +307,7 @@ class ObsidianProfile(BaseProfile):
         current_key = None
         current_list = None
 
-        for line in lines[1:end_idx]:
+        for idx, line in enumerate(lines[1:end_idx]):
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
@@ -279,11 +332,73 @@ class ObsidianProfile(BaseProfile):
                 current_list = None
 
             if ":" in stripped:
-                key, _, value = stripped.partition(":")
+                # Use partition to split at the FIRST colon (key:value format)
+                # This preserves colons in the value (URLs, times, etc.)
+                key, _, value_part = stripped.partition(":")
                 key = key.strip()
-                value = value.strip()
+                value_part = value_part.strip()
+
+                # Handle quoted values that may contain colons
+                if value_part.startswith('"') or value_part.startswith("'"):
+                    quote_char = value_part[0]
+                    closing_quote_idx = value_part.find(quote_char, 1)
+                    if closing_quote_idx > 0:
+                        # Extract the quoted value
+                        value = value_part[1:closing_quote_idx]
+                        # Check for content after the closing quote (e.g., `datetime: "2024-03-15:12:00"`)
+                        remaining = value_part[closing_quote_idx + 1:].strip()
+                        if remaining.startswith(":"):
+                            # There's more content after the quote - append it
+                            value = value + remaining[len(quote_char):].strip()
+                    else:
+                        value = value_part
+                else:
+                    # Unquoted value - use as-is (colons preserved in URLs, times, etc.)
+                    value = value_part
 
                 if not key:
+                    continue
+
+                # Check for multi-line string indicators | (literal) and > (folded)
+                if value == "|" or value == ">":
+                    # Collect subsequent indented lines until we hit the closing ---
+                    multiline_value = []
+                    literal_mode = (value == "|")
+                    # Look ahead at subsequent lines (start at idx+2 to skip current line)
+                    for j in range(idx + 2, end_idx + 1):
+                        next_line = lines[j]
+                        # Check for closing --- BEFORE whitespace check
+                        # (--- starts with '-' which is not whitespace)
+                        if next_line.strip() == "---":
+                            break
+                        if next_line and not next_line[0].isspace():
+                            # Non-indented line - end of multi-line block
+                            break
+                        stripped = next_line.strip()
+                        if stripped:
+                            multiline_value.append(stripped)
+                        elif stripped == "":  # empty or whitespace-only line
+                            if literal_mode:
+                                multiline_value.append("")  # preserve newline
+                            else:
+                                multiline_value.append(" ")  # folded: space
+
+                    if literal_mode:
+                        meta[key] = "\n".join(multiline_value)
+                    else:
+                        # For folded: content lines joined with single space, blank lines become \n
+                        folded_parts = []
+                        for p in multiline_value:
+                            if p == "" or p == " ":
+                                folded_parts.append("\n")
+                            else:
+                                folded_parts.append(p)
+                        result = " ".join(folded_parts)
+                        # Collapse spaces before newlines to single newline
+                        # Keep space after newline (represents indentation in folded YAML)
+                        result = re.sub(r" *\n", "\n", result)
+                        meta[key] = result.strip()
+                    current_key = None
                     continue
 
                 # Parse YAML lists: [item1, item2]

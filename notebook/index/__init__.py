@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS pages (
 
 CREATE TABLE IF NOT EXISTS tags (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT UNIQUE NOT NULL
+    name TEXT NOT NULL,
+    tag_lower TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tagsources (
@@ -56,12 +57,26 @@ CREATE TABLE IF NOT EXISTS links (
     names TEXT
 );
 
+CREATE TABLE IF NOT EXISTS aliases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    page INTEGER NOT NULL REFERENCES pages(id),
+    name TEXT NOT NULL,
+    name_lower TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_aliases_page_name_lower ON aliases(page, name_lower);
+
 CREATE INDEX IF NOT EXISTS idx_pages_name ON pages(name);
 CREATE INDEX IF NOT EXISTS idx_pages_parent ON pages(parent);
 CREATE INDEX IF NOT EXISTS idx_links_source ON links(source);
 CREATE INDEX IF NOT EXISTS idx_links_target ON links(target);
 CREATE INDEX IF NOT EXISTS idx_tagsources_source ON tagsources(source);
 CREATE INDEX IF NOT EXISTS idx_tagsources_tag ON tagsources(tag);
+
+CREATE TABLE IF NOT EXISTS schema_info (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
 """
 
 _FTS_SCHEMA = """
@@ -157,6 +172,9 @@ class Index:
                 logger.debug("FTS5 not available")
             conn.commit()
 
+        # Run schema migrations
+        self._migrate_schema()
+
     @property
     def db(self):
         """Return database connection wrapper for backward compatibility.
@@ -184,6 +202,91 @@ class Index:
         with self._pool.get_connection() as conn:
             yield conn
 
+    def _migrate_schema(self):
+        """Migrate database schema to current version.
+
+        Handles migration from older database versions:
+        - No schema_info table: adds tag_lower column, aliases table, indexes, backfills data
+        - Version 1: current schema with schema_info tracking
+
+        For case-insensitive duplicate tags, the UNIQUE constraint on tag_lower
+        will fail naturally and SQLite will report the error clearly.
+        """
+        with self._pool.get_connection() as conn:
+            # Check if schema_info table exists AND has version = '1'
+            # Note: schema_info may exist but be empty if created by CREATE TABLE IF NOT EXISTS
+            # in _SCHEMA before migration runs. We must check for the version key.
+            cursor = conn.execute(
+                "SELECT value FROM schema_info WHERE key='version'"
+            )
+            row = cursor.fetchone()
+            if row is not None and row[0] == '1':
+                # Already migrated to version 1
+                return
+
+            # Old database without schema_info or version - needs migration
+            conn.execute("BEGIN TRANSACTION")
+            try:
+                # 1. Add tag_lower column if missing
+                cursor = conn.execute("PRAGMA table_info(tags)")
+                columns = [row[1] for row in cursor.fetchall()]
+                if 'tag_lower' not in columns:
+                    conn.execute("ALTER TABLE tags ADD COLUMN tag_lower TEXT")
+
+                # 2. Create aliases table if missing
+                cursor = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='aliases'"
+                )
+                if cursor.fetchone() is None:
+                    conn.execute("""
+                        CREATE TABLE aliases (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            page INTEGER NOT NULL REFERENCES pages(id),
+                            name TEXT NOT NULL,
+                            name_lower TEXT NOT NULL
+                        )
+                    """)
+                    conn.execute(
+                        "CREATE UNIQUE INDEX idx_aliases_page_name_lower ON aliases(page, name_lower)"
+                    )
+
+                # 3. Add indexes if missing
+                cursor = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_tags_tag_lower'"
+                )
+                if cursor.fetchone() is None:
+                    conn.execute(
+                        "CREATE UNIQUE INDEX idx_tags_tag_lower ON tags(tag_lower)"
+                    )
+
+                # 4. Backfill tag_lower = LOWER(name) where tag_lower IS NULL
+                # This will raise IntegrityError if there are case-insensitive duplicates
+                conn.execute("UPDATE tags SET tag_lower = LOWER(name) WHERE tag_lower IS NULL")
+
+                # 5. Create schema_info and mark as version 1
+                # Use IF NOT EXISTS because schema_info may have been created empty
+                # by _SCHEMA's CREATE TABLE IF NOT EXISTS before migration runs
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS schema_info (
+                        key TEXT PRIMARY KEY,
+                        value TEXT
+                    )
+                """)
+                conn.execute("INSERT OR IGNORE INTO schema_info VALUES ('version', '1')")
+
+                conn.commit()
+                logger.info("Database migrated to schema version 1")
+            except sqlite3.IntegrityError as e:
+                conn.rollback()
+                raise RuntimeError(
+                    "Cannot migrate: duplicate tags exist that differ only by case "
+                    "(e.g., 'Apple' and 'APPLE'). Please resolve duplicates before migrating."
+                ) from e
+            except Exception:
+                conn.rollback()
+                logger.error("Schema migration failed")
+                raise
+
     @property
     def is_uptodate(self):
         return self._is_uptodate
@@ -197,13 +300,15 @@ class Index:
         """
         with self._lock:
             # Clear stale entries before rebuilding to prevent duplicates
+            # Order matters: delete from tables with FK dependencies BEFORE their references
             with self.get_connection() as conn:
                 conn.execute("DELETE FROM tagsources")
                 conn.execute("DELETE FROM links")
+                conn.execute("DELETE FROM aliases")  # Must be before pages (FK dependency)
                 conn.execute("DELETE FROM tags")
-                conn.execute("DELETE FROM pages")
                 if self._has_fts:
                     conn.execute("DELETE FROM pages_fts")
+                conn.execute("DELETE FROM pages")
                 conn.commit()
 
             logger.info("Rebuilding index from filesystem...")
@@ -426,19 +531,42 @@ class Index:
                 except sqlite3.IntegrityError:
                     pass
 
-            # Extract links using profile (handles [[Target]], [[Target|Label]], anchors)
-            for target_raw, _display in self.profile.extract_links(text):
+            # Extract links using profile (handles [[Target]], [[Target|Label]], [[Target#Heading]], [[Target^blockid]])
+            for target, heading_anchor, block_id, display_text in self.profile.extract_links(text):
                 # Convert link target to internal page name
-                target_name = self.profile.link_target_to_page_name(target_raw)
+                target_name = self.profile.link_target_to_page_name(target)
                 if not target_name:
                     continue
+
+                # Build the names field with anchor/block_id for preservation
+                # Store original link info: "target#heading^blockid|display" format
+                names_parts = []
+                if target:
+                    names_parts.append(target)
+                if heading_anchor:
+                    names_parts.append("#" + heading_anchor)
+                if block_id:
+                    names_parts.append("^" + block_id)
+                if display_text:
+                    names_parts.append("|" + display_text)
+                names_str = "".join(names_parts) if names_parts else target or ""
 
                 # Find or create target page entry
                 target_id = self._ensure_page_ref(target_name)
                 if target_id:
                     conn.execute(
                         "INSERT INTO links (source, target, rel, names) VALUES (?, ?, 0, ?)",
-                        (page_id, target_id, target_raw),
+                        (page_id, target_id, names_str),
+                    )
+
+            # Extract aliases using profile (handles YAML frontmatter aliases)
+            conn.execute("DELETE FROM aliases WHERE page = ?", (page_id,))
+            if hasattr(self.profile, 'extract_aliases'):
+                for alias_name in self.profile.extract_aliases(text):
+                    alias_lower = alias_name.lower()
+                    conn.execute(
+                        "INSERT OR IGNORE INTO aliases (page, name, name_lower) VALUES (?, ?, ?)",
+                        (page_id, alias_name, alias_lower),
                     )
 
             # Update FTS — strip metadata for clean full-text search
@@ -451,10 +579,15 @@ class Index:
 
     def _ensure_tag(self, name):
         """Get or create a tag and return its id."""
-        row = self._pool.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()
+        tag_lower = name.lower()
+        row = self._pool.execute(
+            "SELECT id, name FROM tags WHERE COALESCE(tag_lower, LOWER(name)) = ?", (tag_lower,)
+        ).fetchone()
         if row:
             return row[0]
-        cursor = self._pool.execute("INSERT INTO tags (name) VALUES (?)", (name,))
+        cursor = self._pool.execute(
+            "INSERT INTO tags (name, tag_lower) VALUES (?, ?)", (name, tag_lower)
+        )
         return cursor.lastrowid
 
     def _ensure_page_ref(self, name):
@@ -547,6 +680,7 @@ class Index:
                     conn.execute("DELETE FROM tagsources WHERE source = ?", (page_id,))
                     conn.execute("DELETE FROM links WHERE source = ?", (page_id,))
                     conn.execute("DELETE FROM links WHERE target = ?", (page_id,))
+                    conn.execute("DELETE FROM aliases WHERE page = ?", (page_id,))
                     conn.execute("DELETE FROM pages WHERE id = ?", (page_id,))
                     if self._has_fts:
                         conn.execute(

@@ -104,8 +104,9 @@ class TagsView:
         """
         if name.startswith("@"):
             name = name[1:]
+        tag_lower = name.lower()
         row = self._db.execute(
-            "SELECT id, name FROM tags WHERE name = ?", (name,)
+            "SELECT id, name FROM tags WHERE tag_lower = ?", (tag_lower,)
         ).fetchone()
         if row:
             return IndexTag(row["name"], row["id"])
@@ -121,6 +122,7 @@ class TagsView:
             tag_name = tag.lstrip("@")
         else:
             tag_name = tag.name
+        tag_lower = tag_name.lower()
 
         rows = self._db.execute(
             """
@@ -128,10 +130,10 @@ class TagsView:
             FROM pages p
             JOIN tagsources ts ON p.id = ts.source
             JOIN tags t ON ts.tag = t.id
-            WHERE t.name = ?
+            WHERE t.tag_lower = ?
             ORDER BY p.sortkey
         """,
-            (tag_name,),
+            (tag_lower,),
         ).fetchall()
         return iter(_row_to_pageinfo(r) for r in rows)
 
@@ -141,15 +143,16 @@ class TagsView:
             tag_name = tag.lstrip("@")
         else:
             tag_name = tag.name
+        tag_lower = tag_name.lower()
 
         row = self._db.execute(
             """
             SELECT COUNT(*)
             FROM tagsources ts
             JOIN tags t ON ts.tag = t.id
-            WHERE t.name = ?
+            WHERE t.tag_lower = ?
         """,
-            (tag_name,),
+            (tag_lower,),
         ).fetchone()
         return row[0]
 
@@ -159,19 +162,19 @@ class TagsView:
         @param tags: list of IndexTag objects or tag name strings
         @returns: iterator of IndexTag
         """
-        tag_names = []
+        tag_names_lower = []
         for t in tags:
             if isinstance(t, str):
-                tag_names.append(t.lstrip("@"))
+                tag_names_lower.append(t.lstrip("@").lower())
             else:
-                tag_names.append(t.name)
+                tag_names_lower.append(t.name.lower())
 
-        if not tag_names:
+        if not tag_names_lower:
             return iter([])
 
         # Find pages that have ALL the given tags
-        placeholders = ",".join("?" * len(tag_names))
-        n = len(tag_names)
+        placeholders = ",".join("?" * len(tag_names_lower))
+        n = len(tag_names_lower)
 
         rows = self._db.execute(
             """
@@ -182,14 +185,14 @@ class TagsView:
                 SELECT ts.source
                 FROM tagsources ts
                 JOIN tags t ON ts.tag = t.id
-                WHERE t.name IN (%s)
+                WHERE t.tag_lower IN (%s)
                 GROUP BY ts.source
-                HAVING COUNT(DISTINCT t.name) = ?
+                HAVING COUNT(DISTINCT t.tag_lower) = ?
             )
-            AND t2.name NOT IN (%s)
+            AND t2.tag_lower NOT IN (%s)
             ORDER BY t2.name
         """ % (placeholders, placeholders),
-            (*tag_names, n, *tag_names),
+            (*tag_names_lower, n, *tag_names_lower),
         ).fetchall()
 
         return iter(IndexTag(r["name"], r["id"]) for r in rows)

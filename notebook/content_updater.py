@@ -64,8 +64,74 @@ def update_links_on_move(notebook, oldpath, newpath):
             logger.warning("Failed to update links in %s", source_name, exc_info=True)
 
 
+def _parse_link_href(href):
+    """Parse link href into (target, heading_anchor, block_id, display_text).
+
+    Parsing order (same as extract_links):
+    1. Split by | to get target_part and display
+    2. Split target_part by # to get target and heading
+    3. Check heading or target for ^ to get block_id
+    """
+    if not href:
+        return None, None, None, None
+
+    # Step 1: Split by | for display text
+    if "|" in href:
+        target_part, display = href.split("|", 1)
+        display = display.strip()
+    else:
+        target_part = href
+        display = None
+
+    # Step 2: Split by # for heading anchor
+    if "#" in target_part:
+        target, heading = target_part.split("#", 1)
+        target = target.strip().strip(":")
+        heading = heading.strip()
+    else:
+        target = target_part.strip().strip(":")
+        heading = None
+
+    # Step 3: Check for block ref (^)
+    block_id = None
+    if heading and "^" in heading:
+        parts = heading.split("^", 1)
+        heading = parts[0].strip() if parts[0] else None
+        block_id = parts[1].strip() if len(parts) > 1 else None
+    elif target and "^" in target:
+        parts = target.split("^", 1)
+        target = parts[0].strip().strip(":")
+        block_id = parts[1].strip() if len(parts) > 1 else None
+
+    return target, heading, block_id, display
+
+
+def _reconstruct_link_href(target, heading, block_id, display):
+    """Reconstruct link href from components."""
+    if not target:
+        return None
+
+    parts = [target]
+
+    if heading:
+        parts.append("#" + heading)
+
+    if block_id:
+        if heading:
+            parts.append("^" + block_id)
+        else:
+            parts.append("^" + block_id)
+
+    href = "".join(parts)
+
+    if display:
+        href += "|" + display
+
+    return href
+
+
 def _update_tree_links(tree, old_name, new_name):
-    """Update link hrefs in a ParseTree.
+    """Update link hrefs in a ParseTree, preserving anchors/blocks/display.
 
     @param tree: ParseTree object
     @param old_name: old page name (e.g. "Old:Path")
@@ -74,32 +140,41 @@ def _update_tree_links(tree, old_name, new_name):
     """
     updated = False
 
-    for element in tree.root.iter():
+    for element in tree.getroot().iter():
         if element.tag == "link":
             href = element.get("href", "")
             if not href:
                 continue
 
-            # Normalize for comparison
-            normalized = href.strip().strip(":")
+            # Parse href into components
+            target, heading, block_id, display = _parse_link_href(href)
+            if not target:
+                continue
 
-            if normalized == old_name:
-                element.set("href", new_name)
-                updated = True
-            elif normalized.startswith(old_name + ":"):
+            # Compare only the target portion
+            if target == old_name:
+                # Reconstruct with new target, preserved components
+                new_href = _reconstruct_link_href(new_name, heading, block_id, display)
+                if new_href:
+                    element.set("href", new_href)
+                    updated = True
+            elif target.startswith(old_name + ":"):
                 # Child page of moved page
-                suffix = normalized[len(old_name) :]
-                element.set("href", new_name + suffix)
-                updated = True
+                suffix = target[len(old_name):]
+                new_target = new_name + suffix
+                new_href = _reconstruct_link_href(new_target, heading, block_id, display)
+                if new_href:
+                    element.set("href", new_href)
+                    updated = True
 
     return updated
 
 
 def update_links_in_moved_page(notebook, page, oldpath, newpath):
-    """Update relative links inside the moved page itself.
+    """Update links inside a moved page.
 
-    When a page moves from one namespace to another, its relative
-    links may need updating.
+    When a page moves from one namespace to another, floating links
+    that reference child pages need to be updated.
 
     @param notebook: Notebook object
     @param page: the moved Page object (already at new location)
@@ -118,21 +193,29 @@ def update_links_in_moved_page(notebook, page, oldpath, newpath):
             return
 
         updated = False
-        for element in tree.root.iter():
+        for element in tree.getroot().iter():
             if element.tag == "link":
                 href = element.get("href", "")
                 if not href:
                     continue
 
-                # Only update relative links (starting with +)
-                if href.startswith("+"):
-                    continue  # sub-page relative — stays
-                if href.startswith(":"):
-                    continue  # absolute — stays
+                # Parse href into components FIRST
+                target, heading, block_id, display = _parse_link_href(href)
+                if not target:
+                    continue
 
-                # Floating link — check if it was relative to old namespace
-                # This is a heuristic; for now we leave floating links as-is
-                # since they resolve by searching upward through namespaces
+                # Skip self-links using PARSED target
+                if target == oldpath.name:
+                    continue
+
+                # Only update explicit child references (Old:Parent:Child → New:Parent:Child)
+                if target.startswith(oldpath.name + ":"):
+                    child_suffix = target[len(oldpath.name):]
+                    new_target = newpath.name + child_suffix
+                    new_href = _reconstruct_link_href(new_target, heading, block_id, display)
+                    if new_href:
+                        element.set("href", new_href)
+                        updated = True
 
         if updated:
             page.set_parsetree(tree)
