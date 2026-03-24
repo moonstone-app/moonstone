@@ -1578,6 +1578,14 @@ def _paths_attachments():
         "schema": {"type": "string"},
         "example": "screenshot.png",
     }
+    _fn_query = {
+        "name": "filename",
+        "in": "query",
+        "required": True,
+        "schema": {"type": "string"},
+        "example": "assets/screenshot.png",
+        "description": "Vault-relative attachment path. Supports nested paths and URL-encoded values.",
+    }
     return {
         "/api/attachments/{page_path}": {
             "get": {
@@ -1609,6 +1617,139 @@ def _paths_attachments():
                 },
             },
         },
+        "/api/attachment/{page_path}": {
+            "get": {
+                "tags": ["Attachments"],
+                "summary": "Download an attachment (query form)",
+                "operationId": "getAttachmentQuery",
+                "description": "Returns raw file content using filename query parameter. Prefer this form for nested page paths.",
+                "parameters": [_pp, _fn_query],
+                "responses": {
+                    "200": {
+                        "description": "File content",
+                        "content": {
+                            "application/octet-stream": {
+                                "schema": {"type": "string", "format": "binary"}
+                            }
+                        },
+                    },
+                    "400": {
+                        "description": "Missing filename query parameter",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        },
+                    },
+                    "403": {
+                        "description": "Access denied",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        },
+                    },
+                    "404": {
+                        "description": "Not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        },
+                    },
+                    "409": {
+                        "description": "Ambiguous basename in Obsidian flat mode",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        },
+                    },
+                },
+            },
+            "post": {
+                "tags": ["Attachments"],
+                "summary": "Upload an attachment (query form)",
+                "operationId": "uploadAttachmentQuery",
+                "description": "Uploads file content using filename query parameter. Prefer this form for nested page paths.",
+                "parameters": [_pp, _fn_query],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/octet-stream": {
+                            "schema": {"type": "string", "format": "binary"}
+                        }
+                    },
+                },
+                "responses": {
+                    "200": {
+                        "description": "Uploaded",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/OkResponse"}
+                            }
+                        },
+                    },
+                    "400": {
+                        "description": "Missing filename query parameter",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        },
+                    },
+                    "403": {
+                        "description": "Read-only",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        },
+                    },
+                },
+            },
+            "delete": {
+                "tags": ["Attachments"],
+                "summary": "Delete an attachment (query form)",
+                "operationId": "deleteAttachmentQuery",
+                "description": "Deletes an attachment using filename query parameter. Prefer this form for nested page paths.",
+                "parameters": [_pp, _fn_query],
+                "responses": {
+                    "200": {
+                        "description": "Deleted",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/OkResponse"}
+                            }
+                        },
+                    },
+                    "400": {
+                        "description": "Missing filename query parameter",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        },
+                    },
+                    "403": {
+                        "description": "Access denied",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        },
+                    },
+                    "404": {
+                        "description": "Not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        },
+                    },
+                },
+            },
+        },
         "/api/attachment/{page_path}/{filename}": {
             "get": {
                 "tags": ["Attachments"],
@@ -1616,6 +1757,7 @@ def _paths_attachments():
                 "operationId": "getAttachment",
                 "description": "Returns the raw file content with the appropriate MIME type.",
                 "parameters": [_pp, _fn],
+                "deprecated": True,
                 "responses": {
                     "200": {
                         "description": "File content",
@@ -1649,6 +1791,7 @@ def _paths_attachments():
                 "operationId": "uploadAttachment",
                 "description": "Uploads a file as an attachment to the specified page.",
                 "parameters": [_pp, _fn],
+                "deprecated": True,
                 "requestBody": {
                     "required": True,
                     "content": {
@@ -1682,6 +1825,7 @@ def _paths_attachments():
                 "operationId": "deleteAttachment",
                 "description": "Permanently removes the attachment file.",
                 "parameters": [_pp, _fn],
+                "deprecated": True,
                 "responses": {
                     "200": {
                         "description": "Deleted",
@@ -2617,6 +2761,9 @@ def _paths_analysis():
 
 # Endpoints NOT available through WebSocket (binary, streaming, lifecycle)
 _WS_EXCLUDED = {
+    ("/api/attachment/{page_path}", "get"),  # binary download
+    ("/api/attachment/{page_path}", "post"),  # binary upload
+    ("/api/attachment/{page_path}", "delete"),  # use HTTP
     ("/api/attachment/{page_path}/{filename}", "get"),  # binary download
     ("/api/attachment/{page_path}/{filename}", "post"),  # binary upload
     ("/api/attachment/{page_path}/{filename}", "delete"),  # use HTTP
