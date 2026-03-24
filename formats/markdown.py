@@ -16,17 +16,17 @@ from moonstone.formats import ParseTree, BaseParser, BaseDumper
 # Inline patterns — compiled once, ordered by priority
 # ---------------------------------------------------------------------------
 
-# Wiki-style embed: ![[file]] or ![[file|alt]]
+# Wiki-style embed: ![[file]] or ![[file|option]]
 _RE_EMBED = re.compile(r"!\[\[([^\]|]+?)(?:\|([^\]]*?))?\]\]")
 
-# Standard image: ![alt](src) or ![alt](src "title")
-_RE_IMAGE = re.compile(r'!\[([^\]]*?)\]\(([^)\s]+?)(?:\s+"[^"]*")?\)')
+# Standard image: ![alt](src) or ![alt](<path with spaces.jpg>) or with title
+_RE_IMAGE = re.compile(r'!\[([^\]]*?)\]\((<[^>]+>|[^)\s]+?)(?:\s+(?:"[^"]*"|\'[^\']*\'))?\)')
 
 # Wiki link: [[Page]] or [[Page|alias]]
 _RE_WIKILINK = re.compile(r"\[\[([^\]|]+?)(?:\|([^\]]*?))?\]\]")
 
-# Standard markdown link: [text](url) or [text](url "title")
-_RE_LINK = re.compile(r'\[([^\[\]]*?)\]\(([^)\s]+?)(?:\s+"[^"]*")?\)')
+# Standard markdown link: [text](url) or [text](<url with spaces>) or with title
+_RE_LINK = re.compile(r'\[([^\[\]]*?)\]\((<[^>]+>|[^)\s]+?)(?:\s+(?:"[^"]*"|\'[^\']*\'))?\)')
 
 # Bold+italic: ***text*** or ___text___
 _RE_BOLDITALIC = re.compile(r"\*\*\*(.+?)\*\*\*|___(.+?)___")
@@ -454,14 +454,35 @@ class Parser(BaseParser):
         # Process the match
         if best_kind == "embed":
             target = best.group(1).strip()
-            alt = best.group(2) or target
-            elem = ET.SubElement(
-                parent, "img", {"src": target, "alt": alt.strip(), "embed": "true"}
-            )
+            option = (best.group(2) or "").strip()
+            attrs = {"src": target, "embed": "true"}
+
+            # Obsidian embed option semantics:
+            # - |300 -> width
+            # - |300x200 -> width + height
+            # - |Alias text -> display text / alt
+            if option:
+                attrs["embed_option"] = option
+                m_wh = re.fullmatch(r"(\d+)x(\d+)", option)
+                if m_wh:
+                    attrs["width"] = m_wh.group(1)
+                    attrs["height"] = m_wh.group(2)
+                    attrs["alt"] = target
+                elif option.isdigit():
+                    attrs["width"] = option
+                    attrs["alt"] = target
+                else:
+                    attrs["alt"] = option
+            else:
+                attrs["alt"] = target
+
+            ET.SubElement(parent, "img", attrs)
 
         elif best_kind == "image":
             alt = best.group(1)
-            src = best.group(2)
+            src = best.group(2).strip()
+            if src.startswith("<") and src.endswith(">"):
+                src = src[1:-1].strip()
             elem = ET.SubElement(parent, "img", {"src": src, "alt": alt})
 
         elif best_kind == "wikilink":
@@ -472,7 +493,9 @@ class Parser(BaseParser):
 
         elif best_kind == "link":
             link_text = best.group(1)
-            href = best.group(2)
+            href = best.group(2).strip()
+            if href.startswith("<") and href.endswith(">"):
+                href = href[1:-1].strip()
             elem = ET.SubElement(parent, "link", {"href": href})
             # Parse inline markup within link text
             self._parse_inline(elem, link_text)
@@ -645,10 +668,14 @@ class Dumper(BaseDumper):
             src = elem.attrib.get("src", "")
             alt = elem.attrib.get("alt", "")
             is_embed = elem.attrib.get("embed", "")
+            embed_option = elem.attrib.get("embed_option", "")
             if self.linker:
                 src = self.linker.img(src)
             if is_embed:
-                lines.append("![[%s]]" % src)
+                if embed_option:
+                    lines.append("![[%s|%s]]" % (src, embed_option))
+                else:
+                    lines.append("![[%s]]" % src)
             else:
                 lines.append("![%s](%s)" % (alt, src))
 
@@ -746,9 +773,12 @@ class Dumper(BaseDumper):
             src = elem.attrib.get("src", "")
             alt = elem.attrib.get("alt", "")
             is_embed = elem.attrib.get("embed", "")
+            embed_option = elem.attrib.get("embed_option", "")
             if self.linker:
                 src = self.linker.img(src)
             if is_embed:
+                if embed_option:
+                    return "![[%s|%s]]" % (src, embed_option)
                 return "![[%s]]" % src
             return "![%s](%s)" % (alt, src)
         elif tag == "tag":

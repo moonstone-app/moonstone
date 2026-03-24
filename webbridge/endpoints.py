@@ -376,6 +376,33 @@ def list_attachments(app, params, environ, start_response, cors_headers, page_pa
 
 @router.route("GET", r"^/api/attachment/(?P<page_path>.+)/(?P<filename>[^/]+)$")
 def get_attachment(app, params, environ, start_response, cors_headers, page_path, filename):
+    # Backward-compatible shim for query-style attachment URLs on nested pages.
+    # Example: /api/attachment/zxczxc/ascasc?filename=lion.png
+    # Legacy route greedily matches as page_path=zxczxc, filename=ascasc.
+    # If query filename is present, reconstruct intended page path.
+    query_filename = params.get("filename", [None])[0]
+    if query_filename:
+        page_path = page_path + "/" + filename
+        filename = query_filename
+    status, headers, body = app.api.get_attachment(page_path, filename)
+    if isinstance(body, bytes):
+        response_headers = cors_headers + list(headers.items())
+        response_headers.append(("Content-Length", str(len(body))))
+        start_response(app._status_string(status), response_headers)
+        return [body]
+    return app._json_response(start_response, status, body, cors_headers, headers)
+
+
+@router.route("GET", r"^/api/attachment/(?P<page_path>.+)$")
+def get_attachment_query(app, params, environ, start_response, cors_headers, page_path):
+    filename = params.get("filename", [None])[0]
+    if not filename:
+        return app._json_response(
+            start_response,
+            400,
+            {"error": "Missing required query parameter: filename"},
+            cors_headers,
+        )
     status, headers, body = app.api.get_attachment(page_path, filename)
     if isinstance(body, bytes):
         response_headers = cors_headers + list(headers.items())
@@ -386,12 +413,49 @@ def get_attachment(app, params, environ, start_response, cors_headers, page_path
 
 @router.route("POST", r"^/api/attachment/(?P<page_path>.+)/(?P<filename>[^/]+)$")
 def post_attachment(app, params, environ, start_response, cors_headers, page_path, filename):
+    query_filename = params.get("filename", [None])[0]
+    if query_filename:
+        page_path = page_path + "/" + filename
+        filename = query_filename
+    file_data = app._read_request_body_raw(environ)
+    status, headers, body = app.api.upload_attachment(page_path, filename, file_data)
+    return app._json_response(start_response, status, body, cors_headers, headers)
+
+
+@router.route("POST", r"^/api/attachment/(?P<page_path>.+)$")
+def post_attachment_query(app, params, environ, start_response, cors_headers, page_path):
+    filename = params.get("filename", [None])[0]
+    if not filename:
+        return app._json_response(
+            start_response,
+            400,
+            {"error": "Missing required query parameter: filename"},
+            cors_headers,
+        )
     file_data = app._read_request_body_raw(environ)
     status, headers, body = app.api.upload_attachment(page_path, filename, file_data)
     return app._json_response(start_response, status, body, cors_headers, headers)
 
 @router.route("DELETE", r"^/api/attachment/(?P<page_path>.+)/(?P<filename>[^/]+)$")
 def delete_attachment(app, params, environ, start_response, cors_headers, page_path, filename):
+    query_filename = params.get("filename", [None])[0]
+    if query_filename:
+        page_path = page_path + "/" + filename
+        filename = query_filename
+    status, headers, body = app.api.delete_attachment(page_path, filename)
+    return app._json_response(start_response, status, body, cors_headers, headers)
+
+
+@router.route("DELETE", r"^/api/attachment/(?P<page_path>.+)$")
+def delete_attachment_query(app, params, environ, start_response, cors_headers, page_path):
+    filename = params.get("filename", [None])[0]
+    if not filename:
+        return app._json_response(
+            start_response,
+            400,
+            {"error": "Missing required query parameter: filename"},
+            cors_headers,
+        )
     status, headers, body = app.api.delete_attachment(page_path, filename)
     return app._json_response(start_response, status, body, cors_headers, headers)
 
@@ -600,5 +664,3 @@ def _yield(app, params, environ, start_response, cors_headers):
 @router.route("GET", r"^/api/dev-bundle$")
 def dev_bundle(app, params, environ, start_response, cors_headers):
     return app._serve_dev_bundle(start_response, cors_headers)
-
-

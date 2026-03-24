@@ -67,13 +67,22 @@ class _WebBridgeLinker(object):
         # Raw formats should keep original paths
         if self._format != 'html':
             return src
-        # Pass through absolute URLs
-        if src.startswith(('http://', 'https://', 'data:', '/')):
+        # Pass through absolute web/data URLs
+        if src.startswith(('http://', 'https://', 'data:', '//')):
+            return src
+        # Already-resolved app URLs should not be rewritten
+        if src.startswith('/api/') or src.startswith('/static/'):
             return src
         # Convert relative path to attachment API URL
         if self._page_path:
             safe_path = self._page_path.replace(':', '/')
-            return '/api/attachment/%s/%s' % (safe_path, src)
+            local_src = src.lstrip('/')
+            local_file, fragment = urllib.parse.urldefrag(local_src)
+            encoded_src = urllib.parse.quote(local_file, safe='')
+            url = '/api/attachment/%s?filename=%s' % (safe_path, encoded_src)
+            if fragment:
+                url += '#' + fragment
+            return url
         return src
 
     def resource(self, path):
@@ -1129,7 +1138,8 @@ class NotebookAPI:
             path = self.notebook.pages.lookup_from_user_input(page_path)
 
             # For flat-mode profiles (e.g. Obsidian), attachments are shared
-            # in vault root. We must filter by what the page actually references.
+            # in vault root. We must filter by what the page actually references
+            # and support nested relative paths (e.g. pix/lion.png).
             profile = getattr(self.notebook, "profile", None)
             allowed_names = None  # None = no filter (per-page dirs)
             if profile and getattr(profile, "attachments_mode", None) == "flat":
@@ -1154,7 +1164,111 @@ class NotebookAPI:
             attachments_dir = self.notebook.get_attachments_dir(path)
 
             files = []
-            if attachments_dir.exists():
+            if attachments_dir.exists() and allowed_names is not None:
+                # Flat mode with explicit refs: resolve each referenced path directly.
+                real_dir = os.path.realpath(attachments_dir.path)
+
+                def _find_unique_by_basename(basename):
+                    if not basename:
+                        return None
+                    matches = []
+                    for root, _, names in os.walk(real_dir):
+                        for candidate_name in names:
+                            if candidate_name == basename:
+                                matches.append(os.path.join(root, candidate_name))
+                                if len(matches) > 1:
+                                    return None
+                    return matches[0] if len(matches) == 1 else None
+
+                seen = set()
+                for ref in sorted(allowed_names):
+                    # Try exact reference path first
+                    candidates = [ref]
+                    # Then try unquoted path for markdown refs like my%20file.png
+                    unquoted = urllib.parse.unquote(ref)
+                    if unquoted != ref:
+                        candidates.append(unquoted)
+
+                    matched = False
+                    for candidate in candidates:
+                        filepath = attachments_dir.file(candidate)
+                        real_file = os.path.realpath(filepath.path)
+                        if not real_file.startswith(real_dir + os.sep):
+                            continue
+                        if filepath.exists() and not os.path.isdir(filepath.path):
+                            rel_name = os.path.relpath(real_file, real_dir).replace(
+                                os.sep, "/"
+                            )
+                            if rel_name in seen:
+                                matched = True
+                                break
+                            seen.add(rel_name)
+                            try:
+                                stat = os.stat(filepath.path)
+                                files.append(
+                                    {
+                                        "name": rel_name,
+                                        "size": stat.st_size,
+                                        "mtime": stat.st_mtime,
+                                    }
+                                )
+                            except OSError:
+                                files.append({"name": rel_name, "size": 0, "mtime": 0})
+                            matched = True
+                            break
+
+                    # Backward-compatible fallback: basename under attachments root
+                    if not matched and "/" in ref:
+                        basename = os.path.basename(ref)
+                        if basename:
+                            filepath = attachments_dir.file(basename)
+                            real_file = os.path.realpath(filepath.path)
+                            if (
+                                real_file.startswith(real_dir + os.sep)
+                                and filepath.exists()
+                                and not os.path.isdir(filepath.path)
+                                and basename not in seen
+                            ):
+                                seen.add(basename)
+                                try:
+                                    stat = os.stat(filepath.path)
+                                    files.append(
+                                        {
+                                            "name": basename,
+                                            "size": stat.st_size,
+                                            "mtime": stat.st_mtime,
+                                        }
+                                    )
+                                except OSError:
+                                    files.append(
+                                        {"name": basename, "size": 0, "mtime": 0}
+                                    )
+
+                    # Obsidian compatibility: bare ![[file.png]] may point to a
+                    # unique file inside a nested folder (e.g. pix/file.png).
+                    if not matched and "/" not in ref:
+                        unique_path = _find_unique_by_basename(ref)
+                        if unique_path:
+                            rel_name = os.path.relpath(unique_path, real_dir).replace(
+                                os.sep, "/"
+                            )
+                            if rel_name not in seen:
+                                seen.add(rel_name)
+                                try:
+                                    stat = os.stat(unique_path)
+                                    files.append(
+                                        {
+                                            "name": rel_name,
+                                            "size": stat.st_size,
+                                            "mtime": stat.st_mtime,
+                                        }
+                                    )
+                                except OSError:
+                                    files.append(
+                                        {"name": rel_name, "size": 0, "mtime": 0}
+                                    )
+
+            elif attachments_dir.exists():
                 for f in attachments_dir.list_names():
                     # Skip files not referenced by this page (flat mode)
                     if allowed_names is not None and f not in allowed_names:
@@ -1185,11 +1299,42 @@ class NotebookAPI:
             import mimetypes
 
             path = self.notebook.pages.lookup_from_user_input(page_path)
+            decoded_filename = urllib.parse.unquote(filename)
+            decoded_filename = decoded_filename.split("#", 1)[0].split("?", 1)[0]
             attachments_dir = self.notebook.get_attachments_dir(path)
-            filepath = attachments_dir.file(filename)
+            filepath = attachments_dir.file(decoded_filename)
+
+            # Obsidian compatibility: ![[file.png]] can refer to a unique file in a
+            # nested folder under the flat attachments root.
+            if not filepath.exists() and "/" not in decoded_filename:
+                profile = getattr(self.notebook, "profile", None)
+                if profile and getattr(profile, "attachments_mode", None) == "flat":
+                    real_dir = os.path.realpath(attachments_dir.path)
+                    matches = []
+                    for root, _, names in os.walk(real_dir):
+                        for candidate_name in names:
+                            if candidate_name == decoded_filename:
+                                matches.append(os.path.join(root, candidate_name))
+                                if len(matches) > 1:
+                                    break
+                        if len(matches) > 1:
+                            break
+
+                    if len(matches) == 1:
+                        rel_name = os.path.relpath(matches[0], real_dir)
+                        filepath = attachments_dir.file(rel_name)
+                    elif len(matches) > 1:
+                        return (
+                            409,
+                            {},
+                            {
+                                "error": "Attachment name is ambiguous: %s"
+                                % decoded_filename
+                            },
+                        )
 
             if not filepath.exists():
-                return 404, {}, {"error": "Attachment not found: %s" % filename}
+                return 404, {}, {"error": "Attachment not found: %s" % decoded_filename}
 
             # Security: ensure file is within attachments dir
             real_file = os.path.realpath(filepath.path)
@@ -1198,7 +1343,7 @@ class NotebookAPI:
                 return 403, {}, {"error": "Access denied"}
 
             content_type = (
-                mimetypes.guess_type(filename)[0] or "application/octet-stream"
+                mimetypes.guess_type(decoded_filename)[0] or "application/octet-stream"
             )
 
             with open(filepath.path, "rb") as f:
@@ -1218,16 +1363,17 @@ class NotebookAPI:
             from moonstone.notebook import Path
 
             path = self.notebook.pages.lookup_from_user_input(page_path)
+            decoded_filename = urllib.parse.unquote(filename)
             attachments_dir = self.notebook.get_attachments_dir(path)
 
             if not attachments_dir.exists():
                 attachments_dir.touch()
 
-            filepath = attachments_dir.file(filename)
+            filepath = attachments_dir.file(decoded_filename)
             with open(filepath.path, "wb") as f:
                 f.write(file_data)
 
-            return 200, {}, {"ok": True, "page": page_path, "filename": filename}
+            return 200, {}, {"ok": True, "page": page_path, "filename": decoded_filename}
 
         return _run_synchronized(_do, timeout=30)
 
@@ -1522,11 +1668,12 @@ class NotebookAPI:
             from moonstone.notebook import Path
 
             path = self.notebook.pages.lookup_from_user_input(page_path)
+            decoded_filename = urllib.parse.unquote(filename)
             attachments_dir = self.notebook.get_attachments_dir(path)
-            filepath = attachments_dir.file(filename)
+            filepath = attachments_dir.file(decoded_filename)
 
             if not filepath.exists():
-                return 404, {}, {"error": "Attachment not found: %s" % filename}
+                return 404, {}, {"error": "Attachment not found: %s" % decoded_filename}
 
             # Security: ensure file is within attachments dir
             real_file = os.path.realpath(filepath.path)
@@ -1535,7 +1682,7 @@ class NotebookAPI:
                 return 403, {}, {"error": "Access denied"}
 
             os.remove(filepath.path)
-            return 200, {}, {"ok": True, "page": page_path, "deleted": filename}
+            return 200, {}, {"ok": True, "page": page_path, "deleted": decoded_filename}
 
         return _run_synchronized(_do)
 

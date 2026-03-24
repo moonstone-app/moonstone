@@ -8,6 +8,7 @@ images, links, wiki-links, embeds, highlights, and inline formatting.
 """
 
 from html import escape as html_escape
+import os
 from moonstone.formats import BaseDumper, BaseParser, ParseTree
 
 
@@ -176,15 +177,47 @@ class Dumper(BaseDumper):
 
         elif tag == "img":
             src = elem.attrib.get("src", "")
+            source_hint = src
             alt = elem.attrib.get("alt", "")
             is_embed = elem.attrib.get("embed", "")
+            width = elem.attrib.get("width", "")
+            height = elem.attrib.get("height", "")
             if self.linker:
                 src = self.linker.img(src)
             if is_embed:
-                lines.append(
-                    '<span class="embed" data-src="%s">![[%s]]</span>'
-                    % (html_escape(src), html_escape(alt or src))
-                )
+                attrs = ['src="%s"' % html_escape(src)]
+                if width.isdigit():
+                    attrs.append('width="%s"' % html_escape(width))
+                if height.isdigit():
+                    attrs.append('height="%s"' % html_escape(height))
+
+                ext = os.path.splitext(source_hint.split("?", 1)[0].split("#", 1)[0])[1].lower()
+                if not ext:
+                    ext = os.path.splitext(src.split("?", 1)[0].split("#", 1)[0])[1].lower()
+                if ext in {
+                    ".png",
+                    ".jpg",
+                    ".jpeg",
+                    ".gif",
+                    ".webp",
+                    ".svg",
+                    ".bmp",
+                    ".ico",
+                    ".tif",
+                    ".tiff",
+                    ".avif",
+                }:
+                    attrs.append('alt="%s"' % html_escape(alt or ""))
+                    lines.append("<img %s>" % " ".join(attrs))
+                elif ext in {".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac"}:
+                    lines.append("<audio controls %s></audio>" % " ".join(attrs))
+                elif ext in {".mp4", ".webm", ".mov", ".mkv", ".ogv"}:
+                    lines.append("<video controls %s></video>" % " ".join(attrs))
+                elif ext == ".pdf":
+                    lines.append('<iframe %s class="embed-pdf"></iframe>' % " ".join(attrs))
+                else:
+                    label = alt or os.path.basename(src) or src
+                    lines.append('<a href="%s" class="embed-file">%s</a>' % (html_escape(src), html_escape(label)))
             else:
                 lines.append(
                     '<img src="%s" alt="%s">' % (html_escape(src), html_escape(alt))

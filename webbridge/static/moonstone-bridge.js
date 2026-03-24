@@ -288,7 +288,7 @@ class MoonstoneBridge {
 	 */
 	async deleteAttachment(pagePath, filename) {
 		return this._delete('/api/attachment/' +
-			this._encodePath(pagePath) + '/' + encodeURIComponent(filename));
+			this._encodePath(pagePath) + '?filename=' + encodeURIComponent(filename));
 	}
 
 	// ============================================================
@@ -344,8 +344,8 @@ class MoonstoneBridge {
 	 */
 	getAttachmentUrl(pagePath, filename) {
 		let url = this.baseUrl + '/api/attachment/' +
-			this._encodePath(pagePath) + '/' + encodeURIComponent(filename);
-		if (this.authToken) url += '?token=' + encodeURIComponent(this.authToken);
+			this._encodePath(pagePath) + '?filename=' + encodeURIComponent(filename);
+		if (this.authToken) url += '&token=' + encodeURIComponent(this.authToken);
 		return url;
 	}
 
@@ -358,7 +358,7 @@ class MoonstoneBridge {
 	 */
 	async uploadAttachment(pagePath, filename, data) {
 		const url = this.baseUrl + '/api/attachment/' +
-			this._encodePath(pagePath) + '/' + encodeURIComponent(filename);
+			this._encodePath(pagePath) + '?filename=' + encodeURIComponent(filename);
 		const headers = {};
 		if (this.authToken) headers['X-Auth-Token'] = this.authToken;
 		const resp = await fetch(url, { method: 'POST', headers, body: data });

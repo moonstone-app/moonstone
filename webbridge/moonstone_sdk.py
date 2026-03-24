@@ -152,8 +152,8 @@ class MoonstoneAPI:
     def upload_attachment(self, page_path, filename, raw_bytes):
         """Upload raw bytes as an attachment to a page."""
         safe_path = page_path.replace(":", "/")
-        safe_file = urllib.parse.quote(filename)
-        path = "attachment/%s/%s" % (safe_path, safe_file)
+        safe_file = urllib.parse.quote(filename, safe="")
+        path = "attachment/%s?filename=%s" % (safe_path, safe_file)
         
         url = "%s/%s" % (self.base_url, path.lstrip("/"))
         headers = {"Content-Type": "application/octet-stream"}

@@ -11,6 +11,7 @@ Full read-write compatibility with Obsidian vaults:
 
 import re
 import os
+import urllib.parse
 from moonstone.profiles.base import BaseProfile
 
 
@@ -453,33 +454,68 @@ class ObsidianProfile(BaseProfile):
         - ![alt](filename.png)         (standard markdown image)
         - ![alt](path/to/file.png)     (with path)
 
-        Returns set of basenames (no paths).
+        Returns normalized vault-relative paths (supports nested dirs).
         """
         refs = set()
 
+        def _normalize_local_target(raw_target):
+            target = (raw_target or "").strip()
+            if not target:
+                return None
+
+            # Markdown angle-bracket form: ![alt](<path/with spaces.png>)
+            if target.startswith("<") and target.endswith(">"):
+                target = target[1:-1].strip()
+
+            # Strip optional markdown title from regular links:
+            # ![alt](file.png "title")
+            if not (target.startswith("<") and target.endswith(">")):
+                # Split only once to keep urls without title intact
+                parts = target.split(None, 1)
+                if len(parts) > 1 and (
+                    parts[1].startswith('"') or parts[1].startswith("'")
+                ):
+                    target = parts[0]
+
+            # Skip non-local targets
+            lowered = target.lower()
+            if lowered.startswith(("http://", "https://", "data:", "mailto:")):
+                return None
+
+            target = urllib.parse.unquote(target)
+            target = target.replace("\\", "/")
+
+            # Obsidian embed parameters can include fragments like #page=3
+            # for PDFs. These are viewer params, not part of filesystem path.
+            target = target.split("#", 1)[0].split("?", 1)[0]
+
+            # Obsidian accepts absolute vault paths (/foo/bar.png)
+            if target.startswith("/"):
+                target = target.lstrip("/")
+
+            while target.startswith("./"):
+                target = target[2:]
+
+            normalized = os.path.normpath(target)
+            if normalized in ("", ".") or normalized.startswith(".."):
+                return None
+
+            normalized = normalized.replace("\\", "/")
+            if "." not in os.path.basename(normalized):
+                return None
+            return normalized
+
         # 1) Obsidian embeds: ![[file.ext]] or ![[file.ext|size]]
         for m in re.finditer(r"!\[\[([^\]|]+?)(?:\|[^\]]*?)?\]\]", text):
-            target = m.group(1).strip()
-            # Take basename only (handle paths like assets/img.png)
-            basename = os.path.basename(target)
-            if basename and "." in basename:
-                refs.add(basename)
+            normalized = _normalize_local_target(m.group(1))
+            if normalized:
+                refs.add(normalized)
 
         # 2) Standard markdown images: ![alt](file.ext) or ![alt](path/file.ext)
-        for m in re.finditer(r"!\[[^\]]*\]\(([^)]+)\)", text):
-            target = m.group(1).strip()
-            # Skip URLs
-            if target.startswith(("http://", "https://", "data:")):
-                continue
-            # Handle // path separators (Moonstone-converted paths)
-            # pasted//image//260225.png → pasted_image_260225.png (on disk)
-            normalized = target.replace("//", "_").replace("/", "_")
-            if "." in normalized:
+        for m in re.finditer(r"!\[[^\]]*\]\((<[^>]+>|[^)]+)\)", text):
+            normalized = _normalize_local_target(m.group(1))
+            if normalized:
                 refs.add(normalized)
-            # Also try the plain basename
-            basename = os.path.basename(target.replace("//", "/"))
-            if basename and "." in basename and basename != normalized:
-                refs.add(basename)
 
         return refs
 
